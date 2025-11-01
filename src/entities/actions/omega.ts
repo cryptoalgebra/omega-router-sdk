@@ -11,11 +11,10 @@ import {
   encodeBoostedRouteToPath,
 } from '@cryptoalgebra/integral-sdk'
 import { CommandType, RoutePlanner } from '../../utils/routerCommands'
-import { CONTRACT_BALANCE } from '../../utils/constants'
 import { Command, RouterActionType } from '../Command'
 import { Permit2Permit } from '../../utils/inputTokens'
 import { BoostedSwapType, determineSwapType } from '../../utils/swapTypeUtils'
-import { ROUTER_ADDRESS } from '../../constants'
+import { ROUTER_ADDRESS, MSG_SENDER, ADDRESS_THIS, CONTRACT_BALANCE } from '../../constants'
 
 export type FlatFeeOptions = {
   amount: BigNumberish

@@ -18,7 +18,7 @@ import { OmegaTrade, SwapOptions } from './entities/actions/omega'
 import { Address } from 'viem'
 import { ethers } from 'ethers'
 import { omegaRouterAbi } from './abis'
-import { ROUTER_ADDRESS } from './constants/addresses'
+import { MSG_SENDER, ADDRESS_THIS, CONTRACT_BALANCE, ROUTER_ADDRESS } from './constants'
 
 // Helper to get address from Currency (handles ExtendedNative)
 function getCurrencyAddress(currency: Currency): string {
