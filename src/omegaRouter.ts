@@ -30,7 +30,7 @@ export type OmegaRouterConfig = {
   deadline?: BigNumberish
 }
 
-export interface MintOptions {
+export interface OmegaMintOptions {
   recipient: Address
   createPool?: boolean
   slippageTolerance: Percent
@@ -44,7 +44,7 @@ export interface MintOptions {
   amount1Underlying?: CurrencyAmount<Currency>
 }
 
-export interface AddLiquidityOptions {
+export interface OmegaAddLiquidityOptions {
   slippageTolerance: Percent
   deadline: BigNumberish
   tokenId: BigNumberish
@@ -56,7 +56,7 @@ export interface AddLiquidityOptions {
   amount1Underlying?: CurrencyAmount<Currency>
 }
 
-export interface RemoveLiquidityOptions {
+export interface OmegaRemoveLiquidityOptions {
   tokenId: BigNumberish
   liquidityPercentage: Percent
   slippageTolerance: Percent
@@ -71,7 +71,7 @@ export interface RemoveLiquidityOptions {
   token1Unwrap?: boolean // unwrap token1 boosted → underlying
 }
 
-export interface CollectOptions {
+export interface OmegaCollectOptions {
   tokenId: BigNumberish
   expectedCurrencyOwed0: BigNumber
   expectedCurrencyOwed1: BigNumber
@@ -119,7 +119,7 @@ export abstract class OmegaRouter {
    * @param position The position to mint
    * @param options Options for the transaction
    */
-  public static addCallParameters(position: Position, options: MintOptions): MethodParameters {
+  public static addCallParameters(position: Position, options: OmegaMintOptions): MethodParameters {
     const planner = new RoutePlanner()
 
     const {
@@ -310,7 +310,7 @@ export abstract class OmegaRouter {
    * @param position The position with increased liquidity
    * @param options Options for the transaction
    */
-  public static increaseCallParameters(position: Position, options: AddLiquidityOptions): MethodParameters {
+  public static increaseCallParameters(position: Position, options: OmegaAddLiquidityOptions): MethodParameters {
     const planner = new RoutePlanner()
 
     const {
@@ -499,7 +499,7 @@ export abstract class OmegaRouter {
    * @param position The position to remove liquidity from
    * @param options Options for the transaction
    */
-  public static removeCallParameters(position: Position, options: RemoveLiquidityOptions): MethodParameters {
+  public static removeCallParameters(position: Position, options: OmegaRemoveLiquidityOptions): MethodParameters {
     const planner = new RoutePlanner()
 
     const { tokenId, liquidityPercentage, slippageTolerance, deadline, burnToken, permit, token0Unwrap, token1Unwrap } =
@@ -608,7 +608,7 @@ export abstract class OmegaRouter {
   public static collectCallParameters(
     token0Address: Address,
     token1Address: Address,
-    options: CollectOptions
+    options: OmegaCollectOptions
   ): MethodParameters {
     const planner = new RoutePlanner()
 
