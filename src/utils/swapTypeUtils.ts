@@ -1,4 +1,4 @@
-import { Pool, Token, BoostedToken } from '@cryptoalgebra/integral-sdk'
+import { Pool, Token, BoostedToken, isBoostedToken } from '@cryptoalgebra/integral-sdk'
 
 /**
  * Boosted Swap Type Classification
@@ -98,13 +98,6 @@ export enum BoostedSwapType {
    * This should use normal Route, not BoostedRoute
    */
   NORMAL = 'NORMAL',
-}
-
-/**
- * Helper: Check if token is a BoostedToken (ERC4626)
- */
-export function isBoostedToken(token: Token): token is BoostedToken {
-  return token instanceof BoostedToken
 }
 
 /**

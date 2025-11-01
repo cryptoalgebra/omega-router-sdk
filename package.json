@@ -29,7 +29,7 @@
     "test:hardhat": "env TS_NODE_COMPILER_OPTIONS='{\"module\": \"commonjs\" }' hardhat test"
   },
   "dependencies": {
-    "@cryptoalgebra/integral-sdk": "npm:@cryptoalgebra/clamm-boosted-pools-sdk@^0.0.2",
+    "@cryptoalgebra/integral-sdk": "npm:@cryptoalgebra/clamm-boosted-pools-sdk@^0.0.3",
     "bignumber.js": "^9.0.2",
     "ethers": "^5.7.0",
     "viem": "^2.38.5"
@@ -64,5 +64,5 @@
     "hoistingLimits": "workspaces"
   },
   "sideEffects": false,
-  "version": "0.0.3"
+  "version": "0.0.4"
 }

@@ -9,6 +9,7 @@ import {
   BoostedRoute,
   BoostedToken,
   encodeBoostedRouteToPath,
+  isBoostedRoute,
 } from '@cryptoalgebra/integral-sdk'
 import { CommandType, RoutePlanner } from '../../utils/routerCommands'
 import { Command, RouterActionType } from '../Command'
@@ -33,8 +34,8 @@ export type SwapOptions = Omit<RouterSwapOptions, 'inputTokenPermit'> & {
 }
 
 /**
- * OmegaTrade — универсальный класс для обычных и boosted-интегральных маршрутов.
- * Поддерживает обычные Routes и BoostedRoutes с автоматическим wrap/unwrap ERC4626.
+ * OmegaTrade — universal class for regular and boosted integral routes.
+ * Supports regular Routes and BoostedRoutes with automatic ERC4626 wrap/unwrap.
  */
 export class OmegaTrade implements Command {
   readonly tradeType: RouterActionType = RouterActionType.OmegaTrade
@@ -46,7 +47,7 @@ export class OmegaTrade implements Command {
     this.trade = trade
     this.options = options
 
-    // логика определения payer
+    // payer determination logic
     if (options.useRouterBalance) {
       this.payerIsUser = false
     } else {
@@ -55,26 +56,26 @@ export class OmegaTrade implements Command {
   }
 
   /**
-   * Главный encode — добавляет команды в planner.
+   * Main encode — adds commands to planner.
    */
   public encode(planner: RoutePlanner) {
     const { route } = this.trade.swaps[0] as { route: BoostedRoute<Currency, Currency> | Route<Currency, Currency> }
     const exactInput = this.trade.tradeType === TradeType.EXACT_INPUT
 
-    // Определяем является ли route бустед роутом
-    const isBoostedRoute = route instanceof BoostedRoute
+    // Determine if route is a boosted route
+    const isBoosted = isBoostedRoute(route)
 
-    if (isBoostedRoute) {
-      // Бустед роут с wrap/unwrap логикой
+    if (isBoosted) {
+      // Boosted route with wrap/unwrap logic
       this.encodeBoostedRoute(planner, route as BoostedRoute<Currency, Currency>, exactInput)
     } else {
-      // Обычный роут без wrap/unwrap
+      // Regular route without wrap/unwrap
       this.encodeRegularRoute(planner, route as Route<Currency, Currency>, exactInput)
     }
   }
 
   /**
-   * Encode для обычного (не-бустед) роута
+   * Encode for regular (non-boosted) route
    */
   private encodeRegularRoute(planner: RoutePlanner, route: Route<Currency, Currency>, exactInput: boolean) {
     const amount = BigNumber.from(
@@ -82,7 +83,7 @@ export class OmegaTrade implements Command {
     )
     const recipient = this.options.recipient ?? MSG_SENDER
 
-    // Используем encodeRouteToPath из SDK
+    // Use encodeRouteToPath from SDK
     const path = encodeRouteToPath(route, !exactInput)
 
     // Transfer input token
@@ -145,8 +146,8 @@ export class OmegaTrade implements Command {
   }
 
   /**
-   * Encode для бустед роута с wrap/unwrap логикой
-   * Использует BoostedSwapType для определения необходимых операций
+   * Encode for boosted route with wrap/unwrap logic
+   * Uses BoostedSwapType to determine necessary operations
    */
   private encodeBoostedRoute(planner: RoutePlanner, route: BoostedRoute<Currency, Currency>, exactInput: boolean) {
     const tokenIn = route.input.wrapped

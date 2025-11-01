@@ -9,6 +9,7 @@ import {
   CurrencyAmount,
   unwrappedToken,
   BoostedToken,
+  isBoostedToken,
 } from '@cryptoalgebra/integral-sdk'
 import { Interface } from '@ethersproject/abi'
 import { BigNumber, BigNumberish } from 'ethers'
@@ -136,8 +137,8 @@ export abstract class OmegaRouter {
 
     const token0 = unwrappedToken(position.pool.token0)
     const token1 = unwrappedToken(position.pool.token1)
-    const isBoostedToken0 = token0 instanceof BoostedToken
-    const isBoostedToken1 = token1 instanceof BoostedToken
+    const isBoostedToken0 = isBoostedToken(token0.wrapped)
+    const isBoostedToken1 = isBoostedToken(token1.wrapped)
 
     // Determine if wrapping is needed based on whether underlying amounts are provided
     const token0Wrap = !!amount0Underlying
@@ -326,8 +327,8 @@ export abstract class OmegaRouter {
 
     const token0 = position.pool.token0
     const token1 = position.pool.token1
-    const isBoostedToken0 = token0 instanceof BoostedToken
-    const isBoostedToken1 = token1 instanceof BoostedToken
+    const isBoostedToken0 = isBoostedToken(token0)
+    const isBoostedToken1 = isBoostedToken(token1)
 
     // Determine if wrapping is needed based on whether underlying amounts are provided
     const token0Wrap = !!amount0Underlying
@@ -507,8 +508,8 @@ export abstract class OmegaRouter {
 
     const token0 = position.pool.token0
     const token1 = position.pool.token1
-    const isBoostedToken0 = token0 instanceof BoostedToken
-    const isBoostedToken1 = token1 instanceof BoostedToken
+    const isBoostedToken0 = isBoostedToken(token0)
+    const isBoostedToken1 = isBoostedToken(token1)
 
     // Calculate liquidity to remove
     const partialPosition = new Position({
