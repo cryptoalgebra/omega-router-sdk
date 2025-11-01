@@ -92,9 +92,6 @@ export class OmegaTrade implements Command {
     const isOutputNative = route.output.isNative
 
     if (exactInput) {
-      // Calculate minAmountOut with 1% slippage protection
-      const minAmountOut = BigNumber.from(this.trade.outputAmount.quotient.toString()).mul(99).div(100)
-
       // Handle input transfer
       if (isInputNative) {
         planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount.toString()])
@@ -102,7 +99,10 @@ export class OmegaTrade implements Command {
         planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [inputToken.address, ROUTER_ADDRESS, amount.toString()])
       }
 
-      // Swap
+      // Swap with slippage protection from trade
+      const minAmountOut = BigNumber.from(
+        this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString()
+      )
       const swapRecipient = isOutputNative ? ADDRESS_THIS : recipient
       planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
         swapRecipient,
@@ -117,8 +117,7 @@ export class OmegaTrade implements Command {
         planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
       }
     } else {
-      // Calculate maxAmountIn with 1% slippage protection
-      const maxAmountIn = BigNumber.from(this.trade.inputAmount.quotient.toString()).mul(101).div(100)
+      const maxAmountIn = BigNumber.from(this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString())
 
       // Handle input transfer
       if (isInputNative) {
