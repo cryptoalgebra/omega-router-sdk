@@ -92,6 +92,9 @@ export class OmegaTrade implements Command {
     const isOutputNative = route.output.isNative
 
     if (exactInput) {
+      // Calculate minAmountOut with 1% slippage protection
+      const minAmountOut = BigNumber.from(this.trade.outputAmount.quotient.toString()).mul(99).div(100)
+
       // Handle input transfer
       if (isInputNative) {
         planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount.toString()])
@@ -101,14 +104,21 @@ export class OmegaTrade implements Command {
 
       // Swap
       const swapRecipient = isOutputNative ? ADDRESS_THIS : recipient
-      planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [swapRecipient, amount.toString(), 0, path, false])
+      planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
+        swapRecipient,
+        amount.toString(),
+        minAmountOut.toString(),
+        path,
+        false,
+      ])
 
       // Handle output unwrap if native
       if (isOutputNative) {
         planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
       }
     } else {
-      const maxAmountIn = BigNumber.from(this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString())
+      // Calculate maxAmountIn with 1% slippage protection
+      const maxAmountIn = BigNumber.from(this.trade.inputAmount.quotient.toString()).mul(101).div(100)
 
       // Handle input transfer
       if (isInputNative) {
@@ -238,13 +248,20 @@ export class OmegaTrade implements Command {
           0,
         ])
 
-        // Swap
+        // Swap with 1% slippage protection
+        // Note: minAmountOut = 0 here because we control slippage on final unwrap
         const path = encodeBoostedRouteToPath(route, false)
         planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [ADDRESS_THIS, CONTRACT_BALANCE, 0, path, false])
 
-        // Unwrap output
+        // Unwrap output with 1% slippage protection
+        const minFinalAmount = BigNumber.from(this.trade.outputAmount.quotient.toString()).mul(99).div(100)
         const finalRecipient = tokenOut.symbol === 'WETH' ? ADDRESS_THIS : recipient
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [boostedOut.address, finalRecipient, CONTRACT_BALANCE, 0])
+        planner.addCommand(CommandType.ERC4626_UNWRAP, [
+          boostedOut.address,
+          finalRecipient,
+          CONTRACT_BALANCE,
+          minFinalAmount.toString(),
+        ])
 
         if (tokenOut.symbol === 'WETH') {
           planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
@@ -255,6 +272,9 @@ export class OmegaTrade implements Command {
       case BoostedSwapType.UNDERLYING_TO_BOOSTED: {
         // wrap → swap (no unwrap)
         const boostedIn = route.tokenPath[1] as BoostedToken
+
+        // Calculate minAmountOut for boosted tokens with 1% slippage
+        const minAmountOut = BigNumber.from(this.trade.outputAmount.quotient.toString()).mul(99).div(100)
 
         // Wrap input
         planner.addCommand(CommandType.ERC4626_WRAP, [
@@ -267,7 +287,13 @@ export class OmegaTrade implements Command {
 
         // Swap
         const path = encodeBoostedRouteToPath(route, false)
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [recipient, CONTRACT_BALANCE, 0, path, false])
+        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
+          recipient,
+          CONTRACT_BALANCE,
+          minAmountOut.toString(),
+          path,
+          false,
+        ])
         break
       }
 
@@ -275,13 +301,19 @@ export class OmegaTrade implements Command {
         // swap → unwrap (no wrap)
         const boostedOut = route.tokenPath[route.tokenPath.length - 2] as BoostedToken
 
-        // Swap
+        // Swap - slippage controlled on unwrap
         const path = encodeBoostedRouteToPath(route, false)
         planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [ADDRESS_THIS, amount.toString(), 0, path, false])
 
-        // Unwrap output
+        // Unwrap output with 1% slippage protection
+        const minFinalAmount = BigNumber.from(this.trade.outputAmount.quotient.toString()).mul(99).div(100)
         const finalRecipient = tokenOut.symbol === 'WETH' ? ADDRESS_THIS : recipient
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [boostedOut.address, finalRecipient, CONTRACT_BALANCE, 0])
+        planner.addCommand(CommandType.ERC4626_UNWRAP, [
+          boostedOut.address,
+          finalRecipient,
+          CONTRACT_BALANCE,
+          minFinalAmount.toString(),
+        ])
 
         if (tokenOut.symbol === 'WETH') {
           planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
@@ -291,8 +323,17 @@ export class OmegaTrade implements Command {
 
       case BoostedSwapType.BOOSTED_TO_BOOSTED: {
         // direct swap (no wrap/unwrap)
+        // Calculate minAmountOut for boosted tokens with 1% slippage
+        const minAmountOut = BigNumber.from(this.trade.outputAmount.quotient.toString()).mul(99).div(100)
+
         const path = encodeBoostedRouteToPath(route, false)
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [recipient, amount.toString(), 0, path, false])
+        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
+          recipient,
+          amount.toString(),
+          minAmountOut.toString(),
+          path,
+          false,
+        ])
         break
       }
     }
@@ -309,7 +350,8 @@ export class OmegaTrade implements Command {
     recipient: string
   ) {
     const amount = BigNumber.from(this.trade.outputAmount.quotient.toString())
-    const maxAmountIn = BigNumber.from(this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString())
+    // Calculate maxAmountIn with 1% slippage protection
+    const maxAmountIn = BigNumber.from(this.trade.inputAmount.quotient.toString()).mul(101).div(100)
     const tokenIn = route.input.wrapped
     const tokenOut = route.output.wrapped
 
