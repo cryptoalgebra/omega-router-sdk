@@ -1,4 +1,4 @@
-import { Pool, Token, BoostedToken, isBoostedToken } from '@cryptoalgebra/integral-sdk'
+import { Pool, AnyToken, BoostedToken } from '@cryptoalgebra/integral-sdk'
 
 /**
  * Boosted Swap Type Classification
@@ -106,9 +106,9 @@ export enum BoostedSwapType {
  * This is the FIRST step in routing logic.
  * It tells us what kind of swap we're dealing with.
  */
-export function determineSwapType(tokenIn: Token, tokenOut: Token): BoostedSwapType {
-  const inputIsBoosted = isBoostedToken(tokenIn)
-  const outputIsBoosted = isBoostedToken(tokenOut)
+export function determineSwapType(tokenIn: AnyToken, tokenOut: AnyToken): BoostedSwapType {
+  const inputIsBoosted = tokenIn.isBoosted
+  const outputIsBoosted = tokenOut.isBoosted
 
   // ═══════════════════════════════════════════════════════════
   // CASE 1: WRAP_ONLY (underlying → its boosted version)
@@ -168,12 +168,12 @@ export function determineSwapType(tokenIn: Token, tokenOut: Token): BoostedSwapT
  */
 export function canPoolBeUsedForSwapType(
   pool: Pool,
-  tokenIn: Token,
-  tokenOut: Token,
+  tokenIn: AnyToken,
+  tokenOut: AnyToken,
   swapType: BoostedSwapType
 ): boolean {
-  const pool0IsBoosted = isBoostedToken(pool.token0)
-  const pool1IsBoosted = isBoostedToken(pool.token1)
+  const pool0IsBoosted = pool.token0.isBoosted
+  const pool1IsBoosted = pool.token1.isBoosted
 
   // Pool must have at least one boosted token
   if (!pool0IsBoosted && !pool1IsBoosted) {

@@ -906,10 +906,10 @@
     exec-sh "^0.3.2"
     minimist "^1.2.0"
 
-"@cryptoalgebra/integral-sdk@npm:@cryptoalgebra/clamm-boosted-pools-sdk@^0.0.3":
-  version "0.0.3"
-  resolved "https://registry.yarnpkg.com/@cryptoalgebra/clamm-boosted-pools-sdk/-/clamm-boosted-pools-sdk-0.0.3.tgz#7d52d76f227090b73766d66b62528dc33bd9ec8f"
-  integrity sha512-t0PhX5+wMiRTP73gRpwhEB1Bl3fijYFyjEdvyN0TT/CQaoUjLVqAyCM6MDPSETUqK6DzJYQ0rcgBgDelPnjvlA==
+"@cryptoalgebra/integral-sdk@npm:@cryptoalgebra/clamm-boosted-pools-sdk@^0.1.3":
+  version "0.1.3"
+  resolved "https://registry.yarnpkg.com/@cryptoalgebra/clamm-boosted-pools-sdk/-/clamm-boosted-pools-sdk-0.1.3.tgz#3c48b127bfaad88ba588154bb45658c82afc887b"
+  integrity sha512-1b6+p76RzQSMzr3QkrSzNlJyAqGk/n3T43TZLzFYRH3jMlpRM2evVPWc26RvMd0KVqZrRZL9p4LbT71wc4WM3w==
   dependencies:
     "@ethersproject/abi" "^5.7.0"
     "@ethersproject/address" "^5.7.0"
@@ -2100,6 +2100,14 @@
     lodash "^4.17.15"
     semver "^7.3.2"
     tsutils "^3.17.1"
+
+"@uniswap/permit2-sdk@^1.4.0":
+  version "1.4.0"
+  resolved "https://registry.yarnpkg.com/@uniswap/permit2-sdk/-/permit2-sdk-1.4.0.tgz#eafb48e89bd747b893a88d3cabd2422a81528b80"
+  integrity sha512-l/aGhfhB93M76vXs4eB8QNwhELE6bs66kh7F1cyobaPtINaVpMmlJv+j3KmHeHwAZIsh7QXyYzhDxs07u0Pe4Q==
+  dependencies:
+    ethers "^5.7.0"
+    tiny-invariant "^1.1.0"
 
 abab@^2.0.0:
   version "2.0.6"
@@ -7795,7 +7803,7 @@ tiny-glob@^0.2.6:
     globalyzer "0.1.0"
     globrex "^0.1.2"
 
-tiny-invariant@^1.3.1:
+tiny-invariant@^1.1.0, tiny-invariant@^1.3.1:
   version "1.3.3"
   resolved "https://registry.yarnpkg.com/tiny-invariant/-/tiny-invariant-1.3.3.tgz#46680b7a873a0d5d10005995eb90a70d74d60127"
   integrity sha512-+FbBPE1o9QAYvviau/qC5SE3caw21q3xkvWKBtja5vgqOWIHHJ3ioaq1VPfn/Szqctz2bU/oYeKd9/z5BL+PVg==

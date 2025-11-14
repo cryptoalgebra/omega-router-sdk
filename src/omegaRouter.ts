@@ -9,7 +9,6 @@ import {
   CurrencyAmount,
   unwrappedToken,
   BoostedToken,
-  isBoostedToken,
 } from '@cryptoalgebra/integral-sdk'
 import { Interface } from '@ethersproject/abi'
 import { BigNumber, BigNumberish } from 'ethers'
@@ -50,8 +49,8 @@ export interface OmegaAddLiquidityOptions {
   deadline: BigNumberish
   tokenId: BigNumberish
   useNative?: boolean
-  token0Permit?: Permit2Permit
-  token1Permit?: Permit2Permit
+  token0Permit: Permit2Permit
+  token1Permit: Permit2Permit
   // Underlying amounts to wrap. If provided, will wrap underlying → boosted before increasing
   amount0Underlying?: CurrencyAmount<Currency>
   amount1Underlying?: CurrencyAmount<Currency>
@@ -63,10 +62,11 @@ export interface OmegaRemoveLiquidityOptions {
   slippageTolerance: Percent
   deadline: BigNumberish
   burnToken?: boolean
-  permit?: {
+  permit: {
     v: number
     r: string
     s: string
+    deadline: string
   }
   token0Unwrap?: boolean // unwrap token0 boosted → underlying
   token1Unwrap?: boolean // unwrap token1 boosted → underlying
@@ -81,6 +81,7 @@ export interface OmegaCollectOptions {
     v: number
     r: string
     s: string
+    deadline: string
   }
   token0Unwrap?: boolean
   token1Unwrap?: boolean
@@ -89,10 +90,10 @@ export interface OmegaCollectOptions {
 export abstract class OmegaRouter {
   public static INTERFACE: Interface = new Interface(omegaRouterAbi)
 
-  public static swapCallParameters(
+  public static async swapCallParameters(
     trade: Trade<Currency, Currency, TradeType>,
     options: SwapOptions
-  ): MethodParameters {
+  ): Promise<MethodParameters> {
     const planner = new RoutePlanner()
 
     const omegaTrade: OmegaTrade = new OmegaTrade(trade, options)
@@ -108,7 +109,7 @@ export abstract class OmegaRouter {
       ? BigNumber.from(omegaTrade.trade.maximumAmountIn(options.slippageTolerance).quotient.toString())
       : BigNumber.from(0)
 
-    omegaTrade.encode(planner)
+    await omegaTrade.encode(planner)
     return OmegaRouter.encodePlan(planner, nativeCurrencyValue, {
       deadline: options.deadline ? BigNumber.from(options.deadline) : undefined,
     })
@@ -137,8 +138,8 @@ export abstract class OmegaRouter {
 
     const token0 = unwrappedToken(position.pool.token0)
     const token1 = unwrappedToken(position.pool.token1)
-    const isBoostedToken0 = isBoostedToken(token0.wrapped)
-    const isBoostedToken1 = isBoostedToken(token1.wrapped)
+    const isBoostedToken0 = token0.isBoosted
+    const isBoostedToken1 = token1.isBoosted
 
     // Determine if wrapping is needed based on whether underlying amounts are provided
     const token0Wrap = !!amount0Underlying
@@ -327,8 +328,8 @@ export abstract class OmegaRouter {
 
     const token0 = position.pool.token0
     const token1 = position.pool.token1
-    const isBoostedToken0 = isBoostedToken(token0)
-    const isBoostedToken1 = isBoostedToken(token1)
+    const isBoostedToken0 = token0.isBoosted
+    const isBoostedToken1 = token1.isBoosted
 
     // Determine if wrapping is needed based on whether underlying amounts are provided
     const token0Wrap = !!amount0Underlying
@@ -508,8 +509,8 @@ export abstract class OmegaRouter {
 
     const token0 = position.pool.token0
     const token1 = position.pool.token1
-    const isBoostedToken0 = isBoostedToken(token0)
-    const isBoostedToken1 = isBoostedToken(token1)
+    const isBoostedToken0 = token0.isBoosted
+    const isBoostedToken1 = token1.isBoosted
 
     // Calculate liquidity to remove
     const partialPosition = new Position({
@@ -530,7 +531,7 @@ export abstract class OmegaRouter {
       const permitSignature = 'permit(address,uint256,uint256,uint8,bytes32,bytes32)'
       const encodedParams = abi.encode(
         ['address', 'uint256', 'uint256', 'uint8', 'bytes32', 'bytes32'],
-        [ROUTER_ADDRESS, tokenId.toString(), deadline.toString(), permit.v, permit.r, permit.s]
+        [ROUTER_ADDRESS, tokenId.toString(), permit.deadline, permit.v, permit.r, permit.s]
       )
       const functionSelector = ethers.utils.id(permitSignature).substring(0, 10)
       const encodedPermit = functionSelector + encodedParams.substring(2)
@@ -558,6 +559,7 @@ export abstract class OmegaRouter {
     planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [decreaseCall])
 
     // Collect tokens (following test pattern)
+    // IMPORTANT: recipient must be router.address (not ADDRESS_THIS) for tokens to be available for unwrap/sweep
     const collectSignature = 'collect((uint256,address,uint128,uint128))'
     const COLLECT_STRUCT = '(uint256 tokenId,address recipient,uint256 amount0Max,uint256 amount1Max)'
     const maxUint128 = BigNumber.from(2).pow(128).sub(1).toString()
@@ -566,7 +568,7 @@ export abstract class OmegaRouter {
       [
         {
           tokenId: tokenId.toString(),
-          recipient: ADDRESS_THIS,
+          recipient: ROUTER_ADDRESS,
           amount0Max: maxUint128,
           amount1Max: maxUint128,
         },
@@ -577,12 +579,27 @@ export abstract class OmegaRouter {
     planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [collectCall])
 
     // Unwrap and send to user
-    // Following test pattern: unwrap directly to final recipient if boosted, otherwise sweep
+    // If boosted token AND unwrap requested: unwrap to underlying
+    // Otherwise: sweep the pool token (boosted or not) as-is
+    console.log('🔍 Token0 handling:', {
+      isBoostedToken0,
+      token0Unwrap,
+      condition: isBoostedToken0 && token0Unwrap,
+      willUse: isBoostedToken0 && token0Unwrap ? 'ERC4626_UNWRAP' : 'SWEEP',
+    })
+
     if (isBoostedToken0 && token0Unwrap) {
       planner.addCommand(CommandType.ERC4626_UNWRAP, [token0.address, MSG_SENDER, CONTRACT_BALANCE, 0])
     } else {
       planner.addCommand(CommandType.SWEEP, [token0.address, MSG_SENDER, 0])
     }
+
+    console.log('🔍 Token1 handling:', {
+      isBoostedToken1,
+      token1Unwrap,
+      condition: isBoostedToken1 && token1Unwrap,
+      willUse: isBoostedToken1 && token1Unwrap ? 'ERC4626_UNWRAP' : 'SWEEP',
+    })
 
     if (isBoostedToken1 && token1Unwrap) {
       planner.addCommand(CommandType.ERC4626_UNWRAP, [token1.address, MSG_SENDER, CONTRACT_BALANCE, 0])
@@ -622,7 +639,7 @@ export abstract class OmegaRouter {
       const permitSignature = 'permit(address,uint256,uint256,uint8,bytes32,bytes32)'
       const encodedParams = abi.encode(
         ['address', 'uint256', 'uint256', 'uint8', 'bytes32', 'bytes32'],
-        [ROUTER_ADDRESS, tokenId.toString(), Date.now() + 86400, permit.v, permit.r, permit.s]
+        [ROUTER_ADDRESS, tokenId.toString(), permit.deadline, permit.v, permit.r, permit.s]
       )
       const functionSelector = ethers.utils.id(permitSignature).substring(0, 10)
       const encodedPermit = functionSelector + encodedParams.substring(2)
@@ -630,6 +647,7 @@ export abstract class OmegaRouter {
     }
 
     // Collect (following test pattern)
+    // IMPORTANT: recipient must be router.address (not ADDRESS_THIS) for tokens to be available for unwrap/sweep
     const collectSignature = 'collect((uint256,address,uint128,uint128))'
     const COLLECT_STRUCT = '(uint256 tokenId,address recipient,uint256 amount0Max,uint256 amount1Max)'
     const maxUint128 = BigNumber.from(2).pow(128).sub(1).toString()
@@ -638,7 +656,7 @@ export abstract class OmegaRouter {
       [
         {
           tokenId: tokenId.toString(),
-          recipient: ADDRESS_THIS,
+          recipient: ROUTER_ADDRESS,
           amount0Max: maxUint128,
           amount1Max: maxUint128,
         },
