@@ -1,4 +1,4 @@
-import { BigNumber, BigNumberish } from 'ethers'
+import { BigNumber } from 'ethers'
 import {
   Currency,
   TradeType,
@@ -9,27 +9,18 @@ import {
   BoostedRoute,
   BoostedToken,
   encodeBoostedRouteToPath,
+  AnyToken,
 } from '@cryptoalgebra/integral-sdk'
 import { CommandType, RoutePlanner } from '../../utils/routerCommands'
 import { Command, RouterActionType } from '../Command'
 import { Permit2Permit } from '../../utils/inputTokens'
-import { BoostedSwapType, determineSwapType } from '../../utils/swapTypeUtils'
 import { ROUTER_ADDRESS, MSG_SENDER, ADDRESS_THIS, CONTRACT_BALANCE, SOURCE_ROUTER } from '../../constants'
-
-export type FlatFeeOptions = {
-  amount: BigNumberish
-  recipient: string
-}
+import { BoostedSwapType, determineSwapType } from '../../utils/swapTypeUtils'
 
 // the existing router permit object doesn't include enough data for permit2
 // so we extend swap options with the permit2 permit
-// when safe mode is enabled, the SDK will add an extra ETH sweep for security
-// when useRouterBalance is enabled the SDK will use the balance in the router for the swap
 export type SwapOptions = Omit<RouterSwapOptions, 'inputTokenPermit'> & {
-  useRouterBalance?: boolean
   inputTokenPermit?: Permit2Permit
-  flatFee?: FlatFeeOptions
-  safeMode?: boolean
 }
 
 /**
@@ -53,323 +44,204 @@ export class OmegaTrade implements Command {
     const { route } = this.trade.swaps[0] as { route: BoostedRoute<Currency, Currency> | Route<Currency, Currency> }
     const exactInput = this.trade.tradeType === TradeType.EXACT_INPUT
 
-    // Determine if route is a boosted route
-    const isBoosted = route.isBoosted
-
-    if (isBoosted) {
+    if (route.isBoosted) {
       // Boosted route with wrap/unwrap logic
-      await this.encodeBoostedRoute(planner, route as BoostedRoute<Currency, Currency>, exactInput)
+      await this.encodeBoostedRoute(planner, route, exactInput)
     } else {
       // Regular route
-      this.encodeRegularRoute(planner, route as Route<Currency, Currency>, exactInput)
+      this.encodeRegularRoute(planner, route, exactInput)
     }
   }
 
   /**
    * Encode for regular (non-boosted) route
+   * Router contract handles multi-hop swaps automatically via encoded path
    */
   private encodeRegularRoute(planner: RoutePlanner, route: Route<Currency, Currency>, exactInput: boolean) {
-    const amount = BigNumber.from(
-      exactInput ? this.trade.inputAmount.quotient.toString() : this.trade.outputAmount.quotient.toString()
-    )
     const recipient = this.options.recipient ?? MSG_SENDER
-
-    const path = encodeRouteToPath(route, !exactInput)
-
-    // Transfer input token
-    const inputToken = route.input.wrapped
     const isInputNative = route.input.isNative
     const isOutputNative = route.output.isNative
 
-    if (exactInput) {
-      // Handle input transfer
-      if (isInputNative) {
-        planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount.toString()])
-      } else {
-        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [inputToken.address, ROUTER_ADDRESS, amount.toString()])
-      }
+    // Encode path for router
+    const path = encodeRouteToPath(route, !exactInput)
 
-      // Swap with slippage protection from trade
+    if (exactInput) {
+      const amountIn = BigNumber.from(this.trade.inputAmount.quotient.toString())
       const minAmountOut = BigNumber.from(
         this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString()
       )
 
-      // Router handles intermediate tokens automatically in multi-hop swaps
-      const swapRecipient = isOutputNative ? ADDRESS_THIS : recipient
+      // 1. Transfer input token to router
+      this.transferInputToken(planner, route.input.wrapped.address, amountIn.toString(), isInputNative)
 
+      // 2. Execute swap (router handles all intermediate hops)
+      const swapRecipient = isOutputNative ? ADDRESS_THIS : recipient
       planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
         swapRecipient,
-        amount.toString(),
+        amountIn.toString(),
         minAmountOut.toString(),
         path,
-        false,
+        false, // payerIsUser = false (already transferred)
       ])
 
-      // Handle output unwrap if native
-      if (isOutputNative) {
-        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-      }
+      // 3. Unwrap WETH to native ETH if needed
+      this.unwrapNativeIfNeeded(planner, recipient, isOutputNative)
     } else {
+      const amountOut = BigNumber.from(this.trade.outputAmount.quotient.toString())
       const maxAmountIn = BigNumber.from(this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString())
 
-      // Handle input transfer
-      if (isInputNative) {
-        planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, maxAmountIn.toString()])
-      } else {
-        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
-          inputToken.address,
-          ROUTER_ADDRESS,
-          maxAmountIn.toString(),
-        ])
-      }
+      // 1. Transfer input token to router
+      this.transferInputToken(planner, route.input.wrapped.address, maxAmountIn.toString(), isInputNative)
 
-      // Swap
+      // 2. Execute swap (router handles all intermediate hops)
       const swapRecipient = isOutputNative ? ADDRESS_THIS : recipient
       planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [
         swapRecipient,
-        amount.toString(),
+        amountOut.toString(),
         maxAmountIn.toString(),
         path,
-        false,
+        false, // payerIsUser = false (already transferred)
       ])
 
-      // Handle output unwrap if native
-      if (isOutputNative) {
-        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-      }
+      // 3. Unwrap WETH to native ETH if needed
+      this.unwrapNativeIfNeeded(planner, recipient, isOutputNative)
 
-      // Sweep unused input
+      // 4. Sweep unused input tokens
       if (isInputNative) {
         planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
       } else {
-        planner.addCommand(CommandType.SWEEP, [inputToken.address, recipient, 0])
+        planner.addCommand(CommandType.SWEEP, [route.input.wrapped.address, recipient, 0])
       }
     }
   }
 
   /**
    * Encode for boosted route with wrap/unwrap logic
-   * Uses BoostedSwapType to determine necessary operations
+   * Uses token properties to determine necessary operations
    */
   private async encodeBoostedRoute(
     planner: RoutePlanner,
     route: BoostedRoute<Currency, Currency>,
     exactInput: boolean
   ) {
-    const tokenIn = route.input.wrapped
-    const tokenOut = route.output.wrapped
-
     const recipient = this.options.recipient
 
-    const swapType = determineSwapType(tokenIn, tokenOut)
-
     if (exactInput) {
-      await this.encodeExactInput(planner, route, swapType, recipient)
+      await this.encodeExactInput(planner, route, recipient)
     } else {
-      await this.encodeExactOutput(planner, route, swapType, recipient)
+      await this.encodeExactOutput(planner, route, recipient)
     }
   }
 
   /**
-   * Encode ExactInput flow
+   * Encode ExactInput flow - dynamic iteration through tokenPath
+   * Analyzes each transition between tokens to determine operations
    */
-  private async encodeExactInput(
-    planner: RoutePlanner,
-    route: BoostedRoute<Currency, Currency>,
-    swapType: BoostedSwapType,
-    recipient: string
-  ) {
-    const tokenIn = route.input.wrapped
-    const tokenOut = route.output.wrapped
-
+  private async encodeExactInput(planner: RoutePlanner, route: BoostedRoute<Currency, Currency>, recipient: string) {
     const amount = BigNumber.from(this.trade.inputAmount.quotient.toString())
     const minAmountOut = this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString()
 
     const isInputNative = route.input.isNative
     const isOutputNative = route.output.isNative
-
     const path = encodeBoostedRouteToPath(route, false)
 
-    // ═══════════════════════════════════════════════════════════
-    // STEP 2: Handle Swap or ERC4626 Wrap based on type
-    // ═══════════════════════════════════════════════════════════
-    switch (swapType) {
-      case BoostedSwapType.WRAP_ONLY: {
-        if (isInputNative) {
-          planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount.toString()])
-        } else {
-          planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, amount.toString()])
+    const { tokenPath } = route
+
+    // Track if we need CONTRACT_BALANCE for swap (after wrap)
+    let useContractBalanceForSwap = false
+
+    // Iterate through tokenPath to determine operations
+    for (let i = 0; i < tokenPath.length - 1; i++) {
+      const currentToken = tokenPath[i]
+      const nextToken = tokenPath[i + 1]
+
+      const operationType = this.getOperationType(currentToken, nextToken)
+
+      if (operationType === BoostedSwapType.WRAP_ONLY) {
+        // Wrap operation: underlying → boosted
+        if (i === 0) {
+          // First operation - transfer input
+          this.transferInputToken(planner, currentToken.address, amount.toString(), isInputNative)
         }
 
-        // underlying → boosted (no pool)
+        const targetRecipient = i === tokenPath.length - 2 ? recipient : ADDRESS_THIS
+        const wrapAmount = i === 0 ? amount.toString() : CONTRACT_BALANCE
+
         planner.addCommand(CommandType.ERC4626_WRAP, [
-          tokenOut.address, // vault
-          tokenIn.address, // asset
-          recipient, // recipient
-          amount.toString(), // amount
-          0, // minSharesOut
-        ])
-        break
-      }
-
-      case BoostedSwapType.UNWRAP_ONLY: {
-        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, amount.toString()])
-
-        // boosted → underlying (no pool)
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [
-          tokenIn.address, // vault
-          isOutputNative ? ADDRESS_THIS : recipient, // recipient
-          amount.toString(), // shares
-          minAmountOut, // amountMin
-        ])
-
-        // Unwrap WETH
-        if (isOutputNative) {
-          planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-        }
-        break
-      }
-
-      case BoostedSwapType.UNDERLYING_TO_UNDERLYING: {
-        // Transfer input token to router
-
-        if (isInputNative) {
-          planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount.toString()])
-        } else {
-          planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, amount.toString()])
-        }
-
-        // wrap → swap → unwrap
-        const boostedIn = route.tokenPath[1]
-        const boostedOut = route.tokenPath[route.tokenPath.length - 2] as BoostedToken
-
-        const boostedMinAmountOut = await boostedOut.previewDeposit(BigInt(minAmountOut))
-
-        // ERC4626 Wrap input
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          boostedIn.address, // vault
-          tokenIn.address, // asset
-          ADDRESS_THIS, // recipient
-          amount.toString(), // amount
-          0, // minSharesOut
-        ])
-
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
-          ADDRESS_THIS,
-          CONTRACT_BALANCE,
-          boostedMinAmountOut,
-          path,
-          SOURCE_ROUTER,
-        ])
-
-        // ERC4626 Unwrap
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [
-          boostedOut.address,
-          isOutputNative ? ADDRESS_THIS : recipient,
-          CONTRACT_BALANCE,
+          nextToken.address,
+          currentToken.address,
+          targetRecipient,
+          wrapAmount,
           0,
         ])
 
-        // Unwrap WETH
-        if (isOutputNative) {
-          planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-        }
-        break
-      }
-
-      case BoostedSwapType.UNDERLYING_TO_BOOSTED: {
-        // wrap → swap (no unwrap)
-        const boostedIn = route.tokenPath[1] as BoostedToken
-
-        // Transfer input token to router
-        if (isInputNative) {
-          planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount.toString()])
-        } else {
-          planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, amount.toString()])
+        useContractBalanceForSwap = true
+      } else if (operationType === BoostedSwapType.UNWRAP_ONLY) {
+        // Unwrap operation: boosted → underlying
+        if (i === 0) {
+          // First operation - transfer input
+          planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
+            currentToken.address,
+            ROUTER_ADDRESS,
+            amount.toString(),
+          ])
         }
 
-        // Wrap input
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          boostedIn.address, // vault
-          tokenIn.address, // asset
-          ADDRESS_THIS, // recipient
-          amount.toString(), // amount
-          0, // minSharesOut
-        ])
+        const targetRecipient = i === tokenPath.length - 2 ? (isOutputNative ? ADDRESS_THIS : recipient) : ADDRESS_THIS
+        const unwrapAmount = i === 0 ? amount.toString() : CONTRACT_BALANCE
+        const minOut = i === tokenPath.length - 2 ? minAmountOut : '0'
 
-        // Swap
+        planner.addCommand(CommandType.ERC4626_UNWRAP, [currentToken.address, targetRecipient, unwrapAmount, minOut])
+
+        if (i === tokenPath.length - 2 && isOutputNative) {
+          this.unwrapNativeIfNeeded(planner, recipient, isOutputNative)
+        }
+      } else {
+        // Swap operation through pool
+        if (i === 0 && !currentToken.isBoosted) {
+          // If starting with underlying token and no wrap before swap, transfer it
+          this.transferInputToken(planner, currentToken.address, amount.toString(), isInputNative)
+        } else if (i === 0 && currentToken.isBoosted) {
+          // Starting with boosted token
+          planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
+            currentToken.address,
+            ROUTER_ADDRESS,
+            amount.toString(),
+          ])
+        }
+
+        // Check if next operation is unwrap (need to calculate required boosted tokens)
+        const nextIsUnwrap =
+          i < tokenPath.length - 2 &&
+          tokenPath[i + 2] &&
+          nextToken.isBoosted &&
+          !tokenPath[i + 2].isBoosted &&
+          nextToken.underlying.equals(tokenPath[i + 2])
+
+        let swapMinOut = minAmountOut
+        if (nextIsUnwrap) {
+          swapMinOut = (await (nextToken as BoostedToken).previewDeposit(BigInt(minAmountOut))).toString()
+        }
+
+        const swapRecipient = nextIsUnwrap ? ADDRESS_THIS : recipient
+        const swapAmountIn = useContractBalanceForSwap ? CONTRACT_BALANCE : amount.toString()
+
         planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
-          recipient, // recipient
-          CONTRACT_BALANCE, // amount
-          minAmountOut, // minAmountOut
-          path, // path
-          SOURCE_ROUTER, // source router
-        ])
-        break
-      }
-
-      case BoostedSwapType.BOOSTED_TO_UNDERLYING: {
-        // swap → unwrap (no wrap)
-        const boostedOut = route.tokenPath[route.tokenPath.length - 2] as BoostedToken
-
-        const boostedMinAmountOut = await boostedOut.previewDeposit(BigInt(minAmountOut))
-
-        // Transfer input token to router
-        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, amount.toString()])
-
-        // Swap
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
-          ADDRESS_THIS,
-          CONTRACT_BALANCE,
-          boostedMinAmountOut.toString(),
+          swapRecipient,
+          swapAmountIn,
+          swapMinOut,
           path,
           SOURCE_ROUTER,
         ])
-
-        // ERC4626 Unwrap
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [
-          boostedOut.address, // vault
-          isOutputNative ? ADDRESS_THIS : recipient, // recipient
-          CONTRACT_BALANCE, // shares
-          0, // amountMin
-        ])
-
-        if (isOutputNative) {
-          planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-        }
-        break
-      }
-
-      case BoostedSwapType.BOOSTED_TO_BOOSTED: {
-        // Transfer input token to router
-        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, amount.toString()])
-
-        // Direct swap (no wrap/unwrap)
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
-          recipient,
-          amount.toString(),
-          minAmountOut, // minAmountOut
-          path,
-          SOURCE_ROUTER,
-        ])
-        break
       }
     }
   }
 
   /**
-   * Encode ExactOutput flow
+   * Encode ExactOutput flow - dynamic iteration through tokenPath
+   * Analyzes each transition between tokens to determine operations
    */
-  private async encodeExactOutput(
-    planner: RoutePlanner,
-    route: BoostedRoute<Currency, Currency>,
-    swapType: BoostedSwapType,
-    recipient: string
-  ) {
-    const tokenIn = route.input.wrapped
-    const tokenOut = route.output.wrapped
-
-    const amountIn = BigNumber.from(this.trade.inputAmount.quotient.toString())
+  private async encodeExactOutput(planner: RoutePlanner, route: BoostedRoute<Currency, Currency>, recipient: string) {
     const amountOut = BigNumber.from(this.trade.outputAmount.quotient.toString())
     const maxAmountIn = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
 
@@ -377,203 +249,154 @@ export class OmegaTrade implements Command {
     const isOutputNative = route.output.isNative
 
     const path = encodeBoostedRouteToPath(route, true)
+    const { tokenPath } = route
 
-    // ═══════════════════════════════════════════════════════════
-    // STEP 2: Handle swap based on type
-    // ═══════════════════════════════════════════════════════════
-    switch (swapType) {
-      case BoostedSwapType.WRAP_ONLY: {
-        if (isInputNative) {
-          planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amountIn.toString()])
-        } else {
-          planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, amountIn.toString()])
-        }
+    // Track if we wrapped input (need CONTRACT_BALANCE for swap)
+    let wrappedInput = false
 
-        // underlying → boosted (no pool)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          tokenOut.address, // vault
-          tokenIn.address, // asset
-          recipient, // recipient
-          amountIn.toString(), // amount
-          0, // minSharesOut
-        ])
-        break
-      }
+    // For ExactOutput, we work backwards through the path to understand dependencies
+    // First pass: identify operations
+    const operations: Array<{
+      type: BoostedSwapType
+      fromIndex: number
+      fromToken: AnyToken
+      toToken: AnyToken
+    }> = []
 
-      case BoostedSwapType.UNWRAP_ONLY: {
-        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, amountIn.toString()])
+    for (let i = 0; i < tokenPath.length - 1; i++) {
+      const currentToken = tokenPath[i]
+      const nextToken = tokenPath[i + 1]
 
-        // boosted → underlying (no pool)
+      const operationType = this.getOperationType(currentToken, nextToken)
+
+      operations.push({
+        type: operationType,
+        fromIndex: i,
+        fromToken: currentToken,
+        toToken: nextToken,
+      })
+    }
+
+    // Phase 1: Transfer input & optional wrap
+    const firstOp = operations[0]
+    if (firstOp.type === BoostedSwapType.WRAP_ONLY) {
+      // Need to wrap input
+      this.transferInputToken(planner, firstOp.fromToken.address, maxAmountIn, isInputNative)
+      planner.addCommand(CommandType.ERC4626_WRAP, [
+        firstOp.toToken.address,
+        firstOp.fromToken.address,
+        ADDRESS_THIS,
+        maxAmountIn,
+        0,
+      ])
+      wrappedInput = true
+    } else if (firstOp.type === BoostedSwapType.UNWRAP_ONLY) {
+      // Direct unwrap (no pool)
+      if (operations.length === 1) {
+        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [firstOp.fromToken.address, ROUTER_ADDRESS, maxAmountIn])
         planner.addCommand(CommandType.ERC4626_UNWRAP, [
-          tokenIn.address, // vault
-          isOutputNative ? ADDRESS_THIS : recipient, // recipient
-          amountIn.toString(), // shares
-          0, // amountMin
+          firstOp.fromToken.address,
+          isOutputNative ? ADDRESS_THIS : recipient,
+          maxAmountIn,
+          amountOut.toString(),
         ])
+        this.unwrapNativeIfNeeded(planner, recipient, isOutputNative)
+        return // Done
+      }
+    } else {
+      // Starting with swap or boosted token
+      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [firstOp.fromToken.address, ROUTER_ADDRESS, maxAmountIn])
+    }
 
-        // Unwrap WETH
-        if (isOutputNative) {
-          planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-        }
-        break
+    // Phase 2: Process swap if present
+    const swapOp = operations.find(
+      (op) => op.type !== BoostedSwapType.WRAP_ONLY && op.type !== BoostedSwapType.UNWRAP_ONLY
+    )
+    if (swapOp) {
+      // Check if we need to unwrap after swap
+      const swapIndex = operations.indexOf(swapOp)
+      const nextOp = operations[swapIndex + 1]
+      const needsUnwrap = nextOp && nextOp.type === BoostedSwapType.UNWRAP_ONLY
+
+      let swapAmountOut = amountOut.toString()
+      if (needsUnwrap) {
+        // Calculate boosted tokens needed
+        const boostedToken = swapOp.toToken as BoostedToken
+        swapAmountOut = (await boostedToken.previewWithdraw(amountOut.toBigInt())).toString()
       }
 
-      case BoostedSwapType.UNDERLYING_TO_UNDERLYING: {
-        // wrap → swap → unwrap
-        const boostedIn = route.tokenPath[1]
-        const boostedOut = route.tokenPath[route.tokenPath.length - 2] as BoostedToken
+      const swapRecipient = needsUnwrap ? ADDRESS_THIS : recipient
+      const swapAmountInMax = wrappedInput ? CONTRACT_BALANCE : maxAmountIn
 
-        if (isInputNative) {
-          planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, maxAmountIn.toString()])
-        } else {
-          planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
-            tokenIn.address,
-            ROUTER_ADDRESS,
-            maxAmountIn.toString(),
-          ])
-        }
+      planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [
+        swapRecipient,
+        swapAmountOut,
+        swapAmountInMax,
+        path,
+        SOURCE_ROUTER,
+      ])
 
-        // Wrap max input
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          boostedIn.address,
-          tokenIn.address,
-          ADDRESS_THIS,
-          maxAmountIn.toString(),
-          0,
-        ])
-
-        // For ExactOutput: calculate how many vault tokens needed to withdraw desired underlying amount
-        // Using previewWithdraw(assets) -> shares (ERC4626 standard method)
-        // This returns the exact number of shares needed to withdraw the specified amount of assets
-        const boostedAmountOut = await boostedOut.previewWithdraw(amountOut.toBigInt())
-
-        // Swap to get exact amount of boosted output tokens
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [
-          ADDRESS_THIS, // recipient
-          boostedAmountOut.toString(), // exact boosted token amount needed
-          CONTRACT_BALANCE, // amountInMax
-          path,
-          SOURCE_ROUTER,
-        ])
-
-        // Unwrap all received boosted tokens to underlying
+      // Phase 3: Unwrap output if needed
+      if (needsUnwrap) {
+        const boostedOut = swapOp.toToken as BoostedToken
         planner.addCommand(CommandType.ERC4626_UNWRAP, [
           boostedOut.address,
           isOutputNative ? ADDRESS_THIS : recipient,
-          CONTRACT_BALANCE, // Unwrap all boosted tokens received from swap
-          amountOut.toString(), // Minimum underlying tokens expected
-        ])
-
-        // Unwrap WETH if needed
-        if (isOutputNative) {
-          planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-        }
-
-        // Unwrap leftover input boosted tokens and return to user
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [
-          boostedIn.address,
-          isInputNative ? ADDRESS_THIS : recipient,
           CONTRACT_BALANCE,
-          0,
-        ])
-
-        if (isInputNative) {
-          planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-        }
-
-        break
-      }
-
-      case BoostedSwapType.UNDERLYING_TO_BOOSTED: {
-        // wrap → swap (no unwrap)
-        const boostedIn = route.tokenPath[1] as BoostedToken
-
-        if (isInputNative) {
-          planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, maxAmountIn.toString()])
-        } else {
-          planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
-            tokenIn.address,
-            ROUTER_ADDRESS,
-            maxAmountIn.toString(),
-          ])
-        }
-
-        // Wrap max input
-        planner.addCommand(CommandType.ERC4626_WRAP, [boostedIn.address, tokenIn.address, ADDRESS_THIS, maxAmountIn, 0])
-
-        // Swap
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [
-          recipient,
           amountOut.toString(),
-          CONTRACT_BALANCE,
-          path,
-          SOURCE_ROUTER,
         ])
-
-        // Unwrap leftover input boosted tokens and return to user
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [
-          boostedIn.address,
-          isInputNative ? ADDRESS_THIS : recipient,
-          CONTRACT_BALANCE,
-          0,
-        ])
-
-        if (isInputNative) {
-          planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-        }
-        break
+        this.unwrapNativeIfNeeded(planner, recipient, isOutputNative)
       }
+    } else if (operations.length === 1 && firstOp.type === BoostedSwapType.WRAP_ONLY) {
+      // Direct wrap without swap
+      // Already handled above, but recipient needs adjustment
+      return
+    }
 
-      case BoostedSwapType.BOOSTED_TO_UNDERLYING: {
-        // swap → unwrap (no wrap)
-        const boostedOut = route.tokenPath[route.tokenPath.length - 2] as BoostedToken
-
-        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, maxAmountIn.toString()])
-
-        // Calculate how many boosted tokens needed to withdraw desired underlying amount
-        // Using previewWithdraw(assets) -> shares (ERC4626 standard method)
-        const boostedAmountOut = await boostedOut.previewWithdraw(amountOut.toBigInt())
-
-        // Swap to get exact amount of boosted tokens
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [
-          ADDRESS_THIS,
-          boostedAmountOut.toString(),
-          CONTRACT_BALANCE,
-          path,
-          SOURCE_ROUTER,
-        ])
-
-        // Unwrap all received boosted tokens to underlying
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [
-          boostedOut.address,
-          isOutputNative ? ADDRESS_THIS : recipient,
-          CONTRACT_BALANCE, // Unwrap all boosted tokens received from swap
-          amountOut.toString(), // Minimum underlying tokens expected
-        ])
-
-        // Unwrap WETH if needed
-        if (isOutputNative) {
-          planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-        }
-
-        // Sweep leftover input boosted tokens ?
-        break
-      }
-
-      case BoostedSwapType.BOOSTED_TO_BOOSTED: {
-        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenIn.address, ROUTER_ADDRESS, maxAmountIn.toString()])
-
-        // direct swap (no wrap/unwrap)
-        planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [
-          recipient,
-          amountOut.toString(),
-          CONTRACT_BALANCE,
-          path,
-          false,
-        ])
-
-        break
+    // Phase 4: Sweep unused input
+    if (wrappedInput) {
+      const boostedIn = operations[0].toToken as BoostedToken
+      planner.addCommand(CommandType.ERC4626_UNWRAP, [
+        boostedIn.address,
+        isInputNative ? ADDRESS_THIS : recipient,
+        CONTRACT_BALANCE,
+        0,
+      ])
+      if (isInputNative) {
+        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
       }
     }
+  }
+
+  /**
+   * Helper: Transfer input tokens to router
+   */
+  private transferInputToken(planner: RoutePlanner, tokenAddress: string, amount: string, isNative: boolean): void {
+    if (isNative) {
+      planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount])
+    } else {
+      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenAddress, ROUTER_ADDRESS, amount])
+    }
+  }
+
+  /**
+   * Helper: Unwrap WETH to native ETH if needed
+   */
+  private unwrapNativeIfNeeded(planner: RoutePlanner, recipient: string, isNative: boolean): void {
+    if (isNative) {
+      planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
+    }
+  }
+
+  /**
+   * Helper: Determine operation type between two adjacent tokens in path
+   *
+   * Uses determineSwapType to classify the transition between adjacent tokens.
+   * For multi-hop routes, we need to analyze each step individually.
+   *
+   * @returns BoostedSwapType for this transition
+   */
+  private getOperationType(fromToken: AnyToken, toToken: AnyToken): BoostedSwapType {
+    return determineSwapType(fromToken, toToken)
   }
 }
