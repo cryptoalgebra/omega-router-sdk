@@ -39,7 +39,8 @@ export enum CommandType {
   INTEGRAL_POSITION_MANAGER_CALL = 0x12,
   INTEGRAL_MINT = 0x13,
   INTEGRAL_POSITION_MANAGER_PERMIT = 0x14,
-  // COMMAND_PLACEHOLDER = 0x15 -> 0x20
+  INTEGRAL_INCREASE_LIQUIDITY = 0x15,
+  // COMMAND_PLACEHOLDER = 0x16 -> 0x20
 
   // Command Types where 0x21<=value<=0x3f
   EXECUTE_SUB_PLAN = 0x21,
@@ -86,6 +87,9 @@ const PERMIT_BATCH_STRUCT =
 
 const MINT_PARAMS =
   '(address token0,address token1,address deployer,int24 tickLower,int24 tickUpper,uint256 amount0Desired,uint256 amount1Desired,uint256 amount0Min,uint256 amount1Min,address recipient,uint256 deadline)'
+
+const INCREASE_LIQUIDITY_PARAMS =
+  '(uint256 tokenId,uint256 amount0Desired,uint256 amount1Desired,uint256 amount0Min,uint256 amount1Min,uint256 deadline)'
 
 const PERMIT2_TRANSFER_FROM_STRUCT = '(address from,address to,uint160 amount,address token)'
 const PERMIT2_TRANSFER_FROM_BATCH_STRUCT = PERMIT2_TRANSFER_FROM_STRUCT + '[]'
@@ -278,6 +282,10 @@ export const COMMAND_DEFINITION: { [key in CommandType]: CommandDefinition } = {
   [CommandType.INTEGRAL_MINT]: {
     parser: Parser.Abi,
     params: [{ name: 'params', type: MINT_PARAMS }],
+  },
+  [CommandType.INTEGRAL_INCREASE_LIQUIDITY]: {
+    parser: Parser.Abi,
+    params: [{ name: 'params', type: INCREASE_LIQUIDITY_PARAMS }],
   },
   [CommandType.INTEGRAL_POSITION_MANAGER_PERMIT]: { parser: Parser.IntegralActions },
   [CommandType.INTEGRAL_POSITION_MANAGER_CALL]: { parser: Parser.IntegralActions },

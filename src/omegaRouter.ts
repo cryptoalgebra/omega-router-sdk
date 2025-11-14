@@ -8,7 +8,6 @@ import {
   Percent,
   CurrencyAmount,
   unwrappedToken,
-  BoostedToken,
 } from '@cryptoalgebra/integral-sdk'
 import { Interface } from '@ethersproject/abi'
 import { BigNumber, BigNumberish } from 'ethers'
@@ -20,18 +19,13 @@ import { ethers } from 'ethers'
 import { omegaRouterAbi } from './abis'
 import { MSG_SENDER, ADDRESS_THIS, CONTRACT_BALANCE, ROUTER_ADDRESS } from './constants'
 
-// Helper to get address from Currency (handles ExtendedNative)
-function getCurrencyAddress(currency: Currency): string {
-  return currency.isToken ? currency.address : currency.wrapped.address
-}
-
 export type OmegaRouterConfig = {
   sender?: string // address
   deadline?: BigNumberish
 }
 
 export interface OmegaMintOptions {
-  recipient: Address
+  recipient: Address // Required for both mint and increase (for refunds)
   createPool?: boolean
   slippageTolerance: Percent
   deadline: BigNumberish
@@ -42,6 +36,8 @@ export interface OmegaMintOptions {
   // Underlying amounts to wrap. If provided, will wrap underlying → boosted before mint
   amount0Underlying?: CurrencyAmount<Currency>
   amount1Underlying?: CurrencyAmount<Currency>
+  // If tokenId is provided, will increase liquidity instead of minting new position
+  tokenId?: BigNumberish
 }
 
 export interface OmegaAddLiquidityOptions {
@@ -116,9 +112,9 @@ export abstract class OmegaRouter {
   }
 
   /**
-   * Produces the on-chain method name and parameters to mint a new position (create liquidity)
+   * Produces the on-chain method name and parameters to mint a new position or increase liquidity
    * Supports boosted pools with automatic wrap/unwrap of ERC4626 tokens
-   * @param position The position to mint
+   * @param position The position to mint or increase
    * @param options Options for the transaction
    */
   public static addCallParameters(position: Position, options: OmegaMintOptions): MethodParameters {
@@ -134,363 +130,192 @@ export abstract class OmegaRouter {
       token1Permit,
       amount0Underlying,
       amount1Underlying,
+      tokenId,
     } = options
 
+    const isIncrease = tokenId !== undefined
+
+    // ═══════════════════════════════════════════════════════════
+    // Extract amounts from position and determine wrapping strategy
+    // ═══════════════════════════════════════════════════════════
+    const { amount0: positionAmount0JSBI, amount1: positionAmount1JSBI } = position.mintAmounts
     const token0 = unwrappedToken(position.pool.token0)
     const token1 = unwrappedToken(position.pool.token1)
-    const isBoostedToken0 = token0.isBoosted
-    const isBoostedToken1 = token1.isBoosted
 
-    // Determine if wrapping is needed based on whether underlying amounts are provided
-    const token0Wrap = !!amount0Underlying
-    const token1Wrap = !!amount1Underlying
+    // If underlying amounts provided, we need to wrap; otherwise use position amounts
+    const token0NeedsWrap = Boolean(amount0Underlying)
+    const token1NeedsWrap = Boolean(amount1Underlying)
 
-    // Check if we're dealing with native currency (ETH)
-    // If wrapping, check if underlying is native; otherwise check if pool token is native
-    const isToken0Native = useNative && (token0Wrap ? amount0Underlying!.currency.isNative : token0.isNative)
-    const isToken1Native = useNative && (token1Wrap ? amount1Underlying!.currency.isNative : token1.isNative)
+    // Create CurrencyAmount from position JSBI amounts for consistency
+    const positionAmount0 = CurrencyAmount.fromRawAmount(position.pool.token0, positionAmount0JSBI.toString())
+    const positionAmount1 = CurrencyAmount.fromRawAmount(position.pool.token1, positionAmount1JSBI.toString())
 
-    // Use underlying amounts if provided (for wrapping scenarios)
-    // Otherwise use position amounts (already in pool tokens)
-    const { amount0, amount1 } = position.mintAmounts
-    const amount0Desired = amount0Underlying
-      ? BigNumber.from(amount0Underlying.quotient.toString())
-      : BigNumber.from(amount0.toString())
-    const amount1Desired = amount1Underlying
-      ? BigNumber.from(amount1Underlying.quotient.toString())
-      : BigNumber.from(amount1.toString())
+    const amount0ToTransfer = token0NeedsWrap ? amount0Underlying! : positionAmount0
+    const amount1ToTransfer = token1NeedsWrap ? amount1Underlying! : positionAmount1
+
+    const isToken0Native = useNative && unwrappedToken(amount0ToTransfer.currency).isNative
+    const isToken1Native = useNative && unwrappedToken(amount1ToTransfer.currency).isNative
 
     let nativeValue = BigNumber.from(0)
 
-    // Add Permit2 signatures if provided
-    if (token0Permit && !isToken0Native) {
-      console.log('Adding token0 permit')
+    // ═══════════════════════════════════════════════════════════
+    // STEP 1: Permit2 signatures (if needed)
+    // ═══════════════════════════════════════════════════════════
+    const amount0Str = amount0ToTransfer.quotient.toString()
+    const amount1Str = amount1ToTransfer.quotient.toString()
+
+    if (token0Permit && !isToken0Native && amount0Str !== '0') {
       encodePermit(planner, token0Permit)
     }
-
-    if (token1Permit && !isToken1Native) {
-      console.log('Adding token1 permit')
+    if (token1Permit && !isToken1Native && amount1Str !== '0') {
       encodePermit(planner, token1Permit)
     }
 
     // ═══════════════════════════════════════════════════════════
-    // STEP 1: Transfer/Wrap Token0
+    // STEP 2: Transfer underlying tokens to router
     // ═══════════════════════════════════════════════════════════
-    if (isToken0Native) {
-      nativeValue = nativeValue.add(amount0Desired)
-      planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount0Desired.toString()])
-
-      if (isBoostedToken0 && token0Wrap) {
-        const underlyingAddress = getCurrencyAddress((token0 as BoostedToken).underlying)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          token0.wrapped.address,
-          underlyingAddress,
-          ADDRESS_THIS,
-          CONTRACT_BALANCE,
-          0,
+    if (amount0Str !== '0') {
+      if (isToken0Native) {
+        nativeValue = nativeValue.add(amount0Str)
+        planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount0Str])
+      } else {
+        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
+          amount0ToTransfer.currency.wrapped.address,
+          ROUTER_ADDRESS,
+          amount0Str,
         ])
       }
-    } else {
-      const underlyingAddress =
-        isBoostedToken0 && token0Wrap ? getCurrencyAddress((token0 as BoostedToken).underlying) : token0.wrapped.address
-      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
-        underlyingAddress,
-        ROUTER_ADDRESS,
-        amount0Desired.toString(),
-      ])
-
-      if (isBoostedToken0 && token0Wrap) {
-        const underlyingAddr = getCurrencyAddress((token0 as BoostedToken).underlying)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          token0.wrapped.address,
-          underlyingAddr,
-          ADDRESS_THIS,
-          amount0Desired.toString(),
-          0,
+    }
+    if (amount1Str !== '0') {
+      if (isToken1Native) {
+        nativeValue = nativeValue.add(amount1Str)
+        planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount1Str])
+      } else {
+        planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
+          amount1ToTransfer.currency.wrapped.address,
+          ROUTER_ADDRESS,
+          amount1Str,
         ])
       }
     }
 
     // ═══════════════════════════════════════════════════════════
-    // STEP 2: Transfer/Wrap Token1
+    // STEP 3: Wrap underlying → boosted (if needed)
     // ═══════════════════════════════════════════════════════════
-    if (isToken1Native) {
-      nativeValue = nativeValue.add(amount1Desired)
-      planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount1Desired.toString()])
-
-      if (isBoostedToken1 && token1Wrap) {
-        const underlyingAddress = getCurrencyAddress((token1 as BoostedToken).underlying)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          token1.wrapped.address,
-          underlyingAddress,
-          ADDRESS_THIS,
-          CONTRACT_BALANCE,
-          0,
-        ])
-      }
-    } else {
-      const underlyingAddress =
-        isBoostedToken1 && token1Wrap ? getCurrencyAddress((token1 as BoostedToken).underlying) : token1.wrapped.address
-      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
-        underlyingAddress,
-        ROUTER_ADDRESS,
-        amount1Desired.toString(),
+    if (token0NeedsWrap && token0.isBoosted && amount0Str !== '0') {
+      planner.addCommand(CommandType.ERC4626_WRAP, [
+        token0.wrapped.address,
+        token0.underlying.address,
+        ADDRESS_THIS,
+        amount0Str,
+        0,
       ])
+    }
 
-      if (isBoostedToken1 && token1Wrap) {
-        const underlyingAddr = getCurrencyAddress((token1 as BoostedToken).underlying)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          token1.wrapped.address,
-          underlyingAddr,
-          ADDRESS_THIS,
-          amount1Desired.toString(),
-          0,
-        ])
-      }
+    if (token1NeedsWrap && token1.isBoosted && amount1Str !== '0') {
+      planner.addCommand(CommandType.ERC4626_WRAP, [
+        token1.wrapped.address,
+        token1.underlying.address,
+        ADDRESS_THIS,
+        amount1Str,
+        0,
+      ])
     }
 
     // ═══════════════════════════════════════════════════════════
-    // STEP 3: Mint Position
+    // STEP 4: Calculate amounts for mint/increase
     // ═══════════════════════════════════════════════════════════
+    // When wrapping: use CONTRACT_BALANCE to consume all wrapped tokens
+    // Otherwise: use specific position amounts
+    const mintAmount0Desired =
+      token0NeedsWrap && token0.isBoosted ? CONTRACT_BALANCE : BigNumber.from(positionAmount0.quotient.toString())
+    const mintAmount1Desired =
+      token1NeedsWrap && token1.isBoosted ? CONTRACT_BALANCE : BigNumber.from(positionAmount1.quotient.toString())
+
     // Calculate minimum amounts with slippage tolerance
-    const { amount0: amount0Min, amount1: amount1Min } = position.mintAmountsWithSlippage(slippageTolerance)
+    const { amount0: amount0MinJSBI, amount1: amount1MinJSBI } = position.mintAmountsWithSlippage(slippageTolerance)
+    let amount0Min = BigNumber.from(amount0MinJSBI.toString())
+    let amount1Min = BigNumber.from(amount1MinJSBI.toString())
 
-    // Determine amounts for mint:
-    // - If token is boosted AND we're wrapping: use CONTRACT_BALANCE (consume all wrapped tokens)
-    // - Otherwise: use original amounts
-    const mintAmount0Desired = isBoostedToken0 && token0Wrap ? CONTRACT_BALANCE : amount0Desired
-    const mintAmount1Desired = isBoostedToken1 && token1Wrap ? CONTRACT_BALANCE : amount1Desired
+    // CRITICAL: Apply rounding buffer when wrapping to account for ERC4626 previewDeposit rounding
+    if (token0NeedsWrap && token0.isBoosted && amount0Min.gt(0)) {
+      const buffer = amount0Min.div(10000) // 0.01% buffer
+      amount0Min = amount0Min.sub(buffer.gt(0) ? buffer : 1)
+    }
 
-    // INTEGRAL_MINT expects a struct of parameters (like in test planner)
-    // Pass as array which will be encoded with MINT_PARAMS struct type
-    planner.addCommand(CommandType.INTEGRAL_MINT, [
-      [
-        token0.wrapped.address, // token0
-        token1.wrapped.address, // token1
-        deployer || '0x0000000000000000000000000000000000000000', // deployer
-        position.tickLower, // tickLower
-        position.tickUpper, // tickUpper
-        mintAmount0Desired.toString(), // amount0Desired
-        mintAmount1Desired.toString(), // amount1Desired
-        amount0Min.toString(), // amount0Min
-        amount1Min.toString(), // amount1Min
-        recipient, // recipient
-        deadline.toString(), // deadline
-      ],
-    ])
+    if (token1NeedsWrap && token1.isBoosted && amount1Min.gt(0)) {
+      const buffer = amount1Min.div(10000) // 0.01% buffer
+      amount1Min = amount1Min.sub(buffer.gt(0) ? buffer : 1)
+    }
 
     // ═══════════════════════════════════════════════════════════
-    // STEP 4: Refund unused tokens
+    // STEP 5: Mint or Increase Liquidity
     // ═══════════════════════════════════════════════════════════
-    // Refund token0
-    if (isBoostedToken0 && token0Wrap) {
-      // Unwrap unused boosted tokens directly to recipient
-      planner.addCommand(CommandType.ERC4626_UNWRAP, [token0.wrapped.address, recipient, CONTRACT_BALANCE, 0])
+
+    if (isIncrease) {
+      planner.addCommand(CommandType.INTEGRAL_INCREASE_LIQUIDITY, [
+        [
+          tokenId!.toString(),
+          mintAmount0Desired.toString(),
+          mintAmount1Desired.toString(),
+          amount0Min.toString(),
+          amount1Min.toString(),
+          deadline.toString(),
+        ],
+      ])
+    } else {
+      planner.addCommand(CommandType.INTEGRAL_MINT, [
+        [
+          token0.wrapped.address,
+          token1.wrapped.address,
+          deployer || '0x0000000000000000000000000000000000000000',
+          position.tickLower,
+          position.tickUpper,
+          mintAmount0Desired.toString(),
+          mintAmount1Desired.toString(),
+          amount0Min.toString(),
+          amount1Min.toString(),
+          recipient,
+          deadline.toString(),
+        ],
+      ])
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // STEP 6: Refund unused tokens
+    // ═══════════════════════════════════════════════════════════
+    // Token0 refund logic
+    if (token0NeedsWrap && token0.isBoosted) {
+      planner.addCommand(CommandType.ERC4626_UNWRAP, [
+        token0.wrapped.address,
+        isToken0Native ? ADDRESS_THIS : recipient,
+        CONTRACT_BALANCE,
+        0,
+      ])
+      if (isToken0Native) {
+        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
+      }
     } else if (isToken0Native) {
       planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
     } else {
-      // Sweep unused tokens (for non-boosted tokens)
       planner.addCommand(CommandType.SWEEP, [token0.wrapped.address, recipient, 0])
     }
 
-    // Refund token1
-    if (isBoostedToken1 && token1Wrap) {
-      // Unwrap unused boosted tokens directly to recipient
-      planner.addCommand(CommandType.ERC4626_UNWRAP, [token1.wrapped.address, recipient, CONTRACT_BALANCE, 0])
+    // Token1 refund logic
+    if (token1NeedsWrap && token1.isBoosted) {
+      planner.addCommand(CommandType.ERC4626_UNWRAP, [
+        token1.wrapped.address,
+        isToken1Native ? ADDRESS_THIS : recipient,
+        CONTRACT_BALANCE,
+        0,
+      ])
+      if (isToken1Native) {
+        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
+      }
     } else if (isToken1Native) {
       planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
     } else {
-      // Sweep unused tokens (for non-boosted tokens)
       planner.addCommand(CommandType.SWEEP, [token1.wrapped.address, recipient, 0])
-    }
-
-    return OmegaRouter.encodePlan(planner, nativeValue, { deadline })
-  }
-
-  /**
-   * Produces the on-chain method name and parameters to increase liquidity in existing position
-   * @param position The position with increased liquidity
-   * @param options Options for the transaction
-   */
-  public static increaseCallParameters(position: Position, options: OmegaAddLiquidityOptions): MethodParameters {
-    const planner = new RoutePlanner()
-
-    const {
-      tokenId,
-      slippageTolerance,
-      deadline,
-      useNative,
-      token0Permit,
-      token1Permit,
-      amount0Underlying,
-      amount1Underlying,
-    } = options
-
-    const token0 = position.pool.token0
-    const token1 = position.pool.token1
-    const isBoostedToken0 = token0.isBoosted
-    const isBoostedToken1 = token1.isBoosted
-
-    // Determine if wrapping is needed based on whether underlying amounts are provided
-    const token0Wrap = !!amount0Underlying
-    const token1Wrap = !!amount1Underlying
-
-    // Check if we're dealing with native currency (ETH)
-    const isToken0Native = useNative && (token0Wrap ? amount0Underlying!.currency.isNative : token0.isNative)
-    const isToken1Native = useNative && (token1Wrap ? amount1Underlying!.currency.isNative : token1.isNative)
-
-    // Use underlying amounts if provided (for wrapping scenarios)
-    // Otherwise use position amounts (already in pool tokens)
-    const { amount0, amount1 } = position.mintAmounts
-    const amount0Desired = amount0Underlying
-      ? BigNumber.from(amount0Underlying.quotient.toString())
-      : BigNumber.from(amount0.toString())
-    const amount1Desired = amount1Underlying
-      ? BigNumber.from(amount1Underlying.quotient.toString())
-      : BigNumber.from(amount1.toString())
-
-    const minimumAmounts = position.mintAmountsWithSlippage(slippageTolerance)
-    const amount0Min = BigNumber.from(minimumAmounts.amount0.toString())
-    const amount1Min = BigNumber.from(minimumAmounts.amount1.toString())
-
-    let nativeValue = BigNumber.from(0)
-
-    // Add Permit2 signatures if provided
-    if (token0Permit && !isToken0Native) {
-      encodePermit(planner, token0Permit)
-    }
-
-    if (token1Permit && !isToken1Native) {
-      encodePermit(planner, token1Permit)
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // STEP 1: Transfer/Wrap Token0
-    // ═══════════════════════════════════════════════════════════
-    if (isToken0Native) {
-      nativeValue = nativeValue.add(amount0Desired)
-      planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount0Desired.toString()])
-
-      if (isBoostedToken0 && token0Wrap) {
-        const underlyingAddress = getCurrencyAddress((token0 as BoostedToken).underlying)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          token0.address,
-          underlyingAddress,
-          ADDRESS_THIS,
-          CONTRACT_BALANCE,
-          0,
-        ])
-      }
-    } else {
-      const underlyingAddress =
-        isBoostedToken0 && token0Wrap ? getCurrencyAddress((token0 as BoostedToken).underlying) : token0.address
-      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
-        underlyingAddress,
-        ROUTER_ADDRESS,
-        amount0Desired.toString(),
-      ])
-
-      if (isBoostedToken0 && token0Wrap) {
-        const underlyingAddr = getCurrencyAddress((token0 as BoostedToken).underlying)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          token0.address,
-          underlyingAddr,
-          ADDRESS_THIS,
-          amount0Desired.toString(),
-          0,
-        ])
-      }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // STEP 2: Transfer/Wrap Token1
-    // ═══════════════════════════════════════════════════════════
-    if (isToken1Native) {
-      nativeValue = nativeValue.add(amount1Desired)
-      planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount1Desired.toString()])
-
-      if (isBoostedToken1 && token1Wrap) {
-        const underlyingAddress = getCurrencyAddress((token1 as BoostedToken).underlying)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          token1.address,
-          underlyingAddress,
-          ADDRESS_THIS,
-          CONTRACT_BALANCE,
-          0,
-        ])
-      }
-    } else {
-      const underlyingAddress =
-        isBoostedToken1 && token1Wrap ? getCurrencyAddress((token1 as BoostedToken).underlying) : token1.address
-      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
-        underlyingAddress,
-        ROUTER_ADDRESS,
-        amount1Desired.toString(),
-      ])
-
-      if (isBoostedToken1 && token1Wrap) {
-        const underlyingAddr = getCurrencyAddress((token1 as BoostedToken).underlying)
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          token1.address,
-          underlyingAddr,
-          ADDRESS_THIS,
-          amount1Desired.toString(),
-          0,
-        ])
-      }
-    }
-
-    // ═══════════════════════════════════════════════════════════
-    // STEP 3: Increase Liquidity
-    // ═══════════════════════════════════════════════════════════
-    // Determine amounts for increaseLiquidity:
-    // - If token is boosted AND we're wrapping: use CONTRACT_BALANCE (consume all wrapped tokens)
-    // - Otherwise: use original amounts
-    const increaseAmount0Desired = isBoostedToken0 && token0Wrap ? CONTRACT_BALANCE : amount0Desired
-    const increaseAmount1Desired = isBoostedToken1 && token1Wrap ? CONTRACT_BALANCE : amount1Desired
-
-    // Encode increaseLiquidity call (following test pattern)
-    const increaseLiquiditySignature = 'increaseLiquidity((uint256,uint256,uint256,uint256,uint256,uint256))'
-    const INCREASE_LIQUIDITY_STRUCT =
-      '(uint256 tokenId,uint256 amount0Desired,uint256 amount1Desired,uint256 amount0Min,uint256 amount1Min,uint256 deadline)'
-    const abi = new ethers.utils.AbiCoder()
-    const encodedParams = abi.encode(
-      [INCREASE_LIQUIDITY_STRUCT],
-      [
-        {
-          tokenId: tokenId.toString(),
-          amount0Desired: increaseAmount0Desired.toString(),
-          amount1Desired: increaseAmount1Desired.toString(),
-          amount0Min: amount0Min.toString(),
-          amount1Min: amount1Min.toString(),
-          deadline: deadline.toString(),
-        },
-      ]
-    )
-    const functionSelector = ethers.utils.id(increaseLiquiditySignature).substring(0, 10)
-    const encodedCall = functionSelector + encodedParams.substring(2)
-
-    planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [encodedCall])
-
-    // ═══════════════════════════════════════════════════════════
-    // STEP 4: Refund unused tokens
-    // ═══════════════════════════════════════════════════════════
-    // Refund token0
-    if (isBoostedToken0 && token0Wrap) {
-      planner.addCommand(CommandType.ERC4626_UNWRAP, [token0.address, MSG_SENDER, CONTRACT_BALANCE, 0])
-    } else if (isToken0Native) {
-      planner.addCommand(CommandType.UNWRAP_WETH, [MSG_SENDER, 0])
-    } else {
-      planner.addCommand(CommandType.SWEEP, [token0.address, MSG_SENDER, 0])
-    }
-
-    // Refund token1
-    if (isBoostedToken1 && token1Wrap) {
-      planner.addCommand(CommandType.ERC4626_UNWRAP, [token1.address, MSG_SENDER, CONTRACT_BALANCE, 0])
-    } else if (isToken1Native) {
-      planner.addCommand(CommandType.UNWRAP_WETH, [MSG_SENDER, 0])
-    } else {
-      planner.addCommand(CommandType.SWEEP, [token1.address, MSG_SENDER, 0])
     }
 
     return OmegaRouter.encodePlan(planner, nativeValue, { deadline })
