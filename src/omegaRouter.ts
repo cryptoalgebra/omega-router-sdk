@@ -15,11 +15,11 @@ import { Interface } from '@ethersproject/abi'
 import { BigNumber, BigNumberish } from 'ethers'
 import { CommandType, RoutePlanner } from './utils/routerCommands'
 import { encodePermit, Permit2Permit } from './utils/inputTokens'
-import { OmegaTrade, SwapOptions } from './entities/actions/omega'
 import { Address } from 'viem'
 import { omegaRouterAbi } from './abis'
 import { ADDRESS_THIS, CONTRACT_BALANCE, ROUTER_ADDRESS } from './constants'
 import { encodeERC721Permit, encodeDecreaseLiquidity, encodeCollect, encodeBurn } from './utils/encodeCall'
+import { OmegaTrade, SwapOptions } from './entities'
 
 export type OmegaRouterConfig = {
   sender?: string // address

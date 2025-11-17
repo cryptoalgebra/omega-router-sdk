@@ -1,2 +1,2 @@
-export * from './actions'
 export * from './Command'
+export * from './OmegaTrade'

@@ -11,11 +11,11 @@ import {
   encodeBoostedRouteToPath,
   AnyToken,
 } from '@cryptoalgebra/integral-sdk'
-import { CommandType, RoutePlanner } from '../../utils/routerCommands'
-import { Command, RouterActionType } from '../Command'
-import { Permit2Permit } from '../../utils/inputTokens'
-import { ROUTER_ADDRESS, MSG_SENDER, ADDRESS_THIS, CONTRACT_BALANCE, SOURCE_ROUTER } from '../../constants'
-import { BoostedSwapType, determineSwapType } from '../../utils/swapTypeUtils'
+import { CommandType, RoutePlanner } from '../utils/routerCommands'
+import { Command, RouterActionType } from './Command'
+import { Permit2Permit } from '../utils/inputTokens'
+import { ROUTER_ADDRESS, MSG_SENDER, ADDRESS_THIS, CONTRACT_BALANCE, SOURCE_ROUTER } from '../constants'
+import { BoostedSwapType, determineSwapType } from '../utils/swapTypeUtils'
 
 // the existing router permit object doesn't include enough data for permit2
 // so we extend swap options with the permit2 permit
