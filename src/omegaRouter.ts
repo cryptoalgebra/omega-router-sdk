@@ -18,7 +18,13 @@ import { encodePermit, Permit2Permit } from './utils/inputTokens'
 import { Address } from 'viem'
 import { omegaRouterAbi } from './abis'
 import { ADDRESS_THIS, CONTRACT_BALANCE, ROUTER_ADDRESS } from './constants'
-import { encodeERC721Permit, encodeDecreaseLiquidity, encodeCollect, encodeBurn } from './utils/encodeCall'
+import {
+  encodeERC721Permit,
+  encodeDecreaseLiquidity,
+  encodeCollect,
+  encodeBurn,
+  NFTPermitSignature,
+} from './utils/encodeCall'
 import { OmegaTrade, SwapOptions } from './entities'
 
 export type OmegaRouterConfig = {
@@ -28,13 +34,12 @@ export type OmegaRouterConfig = {
 
 export interface OmegaMintOptions {
   recipient: Address // Required for both mint and increase (for refunds)
-  createPool?: boolean
   slippageTolerance: Percent
   deadline: BigNumberish
   useNative?: boolean
   deployer?: Address
-  token0Permit?: Permit2Permit
-  token1Permit?: Permit2Permit
+  token0Permit: Permit2Permit | null
+  token1Permit: Permit2Permit | null
   // Underlying amounts to wrap. If provided, will wrap underlying → boosted before mint
   amount0Underlying?: CurrencyAmount<Currency>
   amount1Underlying?: CurrencyAmount<Currency>
@@ -48,12 +53,7 @@ export interface OmegaRemoveLiquidityOptions {
   slippageTolerance: Percent
   deadline: BigNumberish
   burnToken?: boolean
-  permit: {
-    v: number
-    r: string
-    s: string
-    deadline: number
-  }
+  permit: NFTPermitSignature
   recipient: Address // Where to send the removed liquidity
   token0Unwrap?: boolean // unwrap token0 boosted → underlying
   token1Unwrap?: boolean // unwrap token1 boosted → underlying
@@ -62,12 +62,7 @@ export interface OmegaRemoveLiquidityOptions {
 export interface OmegaCollectOptions {
   tokenId: BigNumberish
   recipient: Address
-  permit?: {
-    v: number
-    r: string
-    s: string
-    deadline: number
-  }
+  permit: NFTPermitSignature
   token0Unwrap?: boolean // unwrap token0 boosted → underlying
   token1Unwrap?: boolean // unwrap token1 boosted → underlying
 }
@@ -148,7 +143,7 @@ export abstract class OmegaRouter {
     let nativeValue = BigNumber.from(0)
 
     // ═══════════════════════════════════════════════════════════
-    // STEP 1: Permit2 signatures (if needed)
+    // STEP 1: Permit2 signatures
     // ═══════════════════════════════════════════════════════════
     const amount0Str = amount0ToTransfer.quotient.toString()
     const amount1Str = amount1ToTransfer.quotient.toString()
@@ -217,28 +212,32 @@ export abstract class OmegaRouter {
     // When wrapping: use CONTRACT_BALANCE to consume all wrapped tokens
     // Otherwise: use specific position amounts
     const mintAmount0Desired =
-      token0NeedsWrap && token0.isBoosted ? CONTRACT_BALANCE : BigNumber.from(positionAmount0.quotient.toString())
+      token0NeedsWrap && token0.isBoosted ? CONTRACT_BALANCE : positionAmount0.quotient.toString()
     const mintAmount1Desired =
-      token1NeedsWrap && token1.isBoosted ? CONTRACT_BALANCE : BigNumber.from(positionAmount1.quotient.toString())
+      token1NeedsWrap && token1.isBoosted ? CONTRACT_BALANCE : positionAmount1.quotient.toString()
 
     // Calculate minimum amounts with slippage tolerance
     const { amount0: amount0MinJSBI, amount1: amount1MinJSBI } = position.mintAmountsWithSlippage(slippageTolerance)
     let amount0Min = BigNumber.from(amount0MinJSBI.toString())
     let amount1Min = BigNumber.from(amount1MinJSBI.toString())
 
+    // Apply rounding buffer when wrapping to account for ERC4626 previewDeposit rounding
+    if (token0NeedsWrap && token0.isBoosted && amount0Min.gt(0)) {
+      const buffer = amount0Min.div(10000) // 0.01% buffer
+      amount0Min = amount0Min.sub(buffer.gt(0) ? buffer : 1)
+    }
+
+    if (token1NeedsWrap && token1.isBoosted && amount1Min.gt(0)) {
+      const buffer = amount1Min.div(10000) // 0.01% buffer
+      amount1Min = amount1Min.sub(buffer.gt(0) ? buffer : 1)
+    }
+
     // ═══════════════════════════════════════════════════════════
     // STEP 5: Mint or Increase Liquidity
     // ═══════════════════════════════════════════════════════════
     if (isIncrease) {
       planner.addCommand(CommandType.INTEGRAL_INCREASE_LIQUIDITY, [
-        [
-          tokenId!.toString(),
-          mintAmount0Desired.toString(),
-          mintAmount1Desired.toString(),
-          amount0Min.toString(),
-          amount1Min.toString(),
-          deadline.toString(),
-        ],
+        [tokenId!.toString(), mintAmount0Desired, mintAmount1Desired, amount0Min, amount1Min, deadline.toString()],
       ])
     } else {
       planner.addCommand(CommandType.INTEGRAL_MINT, [
@@ -248,10 +247,10 @@ export abstract class OmegaRouter {
           deployer || '0x0000000000000000000000000000000000000000',
           position.tickLower,
           position.tickUpper,
-          mintAmount0Desired.toString(),
-          mintAmount1Desired.toString(),
-          amount0Min.toString(),
-          amount1Min.toString(),
+          mintAmount0Desired,
+          mintAmount1Desired,
+          amount0Min,
+          amount1Min,
           recipient,
           deadline.toString(),
         ],
@@ -327,12 +326,14 @@ export abstract class OmegaRouter {
     const isToken0Native = unwrappedToken(token0Unwrap && token0.isBoosted ? token0.underlying : token0).isNative
     const isToken1Native = unwrappedToken(token1Unwrap && token1.isBoosted ? token1.underlying : token1).isNative
 
+    const liquidityToBurn = liquidityPercentage.multiply(position.liquidity).quotient.toString()
+
     // ═══════════════════════════════════════════════════════════
     // STEP 1: Calculate liquidity to remove
     // ═══════════════════════════════════════════════════════════
     const partialPosition = new Position({
       pool: position.pool,
-      liquidity: liquidityPercentage.multiply(position.liquidity).quotient,
+      liquidity: liquidityToBurn,
       tickLower: position.tickLower,
       tickUpper: position.tickUpper,
     })
@@ -340,29 +341,26 @@ export abstract class OmegaRouter {
     const { amount0: amount0Min, amount1: amount1Min } = partialPosition.burnAmountsWithSlippage(slippageTolerance)
 
     // ═══════════════════════════════════════════════════════════
-    // STEP 2: ERC721 Permit (if provided)
+    // STEP 2: ERC721 Permit
     // ═══════════════════════════════════════════════════════════
-    if (permit) {
-      const encodedPermit = encodeERC721Permit({
-        spender: ROUTER_ADDRESS,
-        tokenId: BigNumber.from(tokenId),
-        deadline: permit.deadline.toString(),
-        v: permit.v,
-        r: permit.r,
-        s: permit.s,
-      })
-      planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_PERMIT, [encodedPermit])
-    }
+    const encodedPermit = encodeERC721Permit({
+      spender: ROUTER_ADDRESS,
+      tokenId: BigNumber.from(tokenId),
+      deadline: permit.deadline.toString(),
+      v: permit.v,
+      r: permit.r,
+      s: permit.s,
+    })
+    planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_PERMIT, [encodedPermit])
 
     // ═══════════════════════════════════════════════════════════
     // STEP 3: Decrease Liquidity
     // ═══════════════════════════════════════════════════════════
-    const liquidityBN = BigNumber.from(partialPosition.liquidity.toString())
     const encodedDecreaseCall = encodeDecreaseLiquidity({
       tokenId: BigNumber.from(tokenId),
-      liquidity: liquidityBN,
-      amount0Min: Number(amount0Min.toString()),
-      amount1Min: Number(amount1Min.toString()),
+      liquidity: BigNumber.from(liquidityToBurn),
+      amount0Min: amount0Min.toString(),
+      amount1Min: amount1Min.toString(),
       deadline: deadline.toString(),
     })
     planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [encodedDecreaseCall])

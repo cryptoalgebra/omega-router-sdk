@@ -14,6 +14,13 @@ const DECREASE_LIQUIDITY_STRUCT =
   '(uint256 tokenId,uint128 liquidity,uint256 amount0Min,uint256 amount1Min,uint256 deadline)'
 const COLLECT_STRUCT = '(uint256 tokenId,address recipient,uint256 amount0Max,uint256 amount1Max)'
 
+export interface NFTPermitSignature {
+  v: number
+  r: string
+  s: string
+  deadline: number
+}
+
 interface ERC721PermitParams {
   spender: string
   tokenId: ethers.BigNumber
@@ -26,8 +33,8 @@ interface ERC721PermitParams {
 interface DecreaseLiquidityParams {
   tokenId: ethers.BigNumber
   liquidity: ethers.BigNumber
-  amount0Min: number
-  amount1Min: number
+  amount0Min: string
+  amount1Min: string
   deadline: string
 }
 
