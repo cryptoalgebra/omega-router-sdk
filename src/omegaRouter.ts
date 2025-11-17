@@ -8,6 +8,8 @@ import {
   Percent,
   CurrencyAmount,
   unwrappedToken,
+  MaxUint128,
+  AnyToken,
 } from '@cryptoalgebra/integral-sdk'
 import { Interface } from '@ethersproject/abi'
 import { BigNumber, BigNumberish } from 'ethers'
@@ -15,9 +17,9 @@ import { CommandType, RoutePlanner } from './utils/routerCommands'
 import { encodePermit, Permit2Permit } from './utils/inputTokens'
 import { OmegaTrade, SwapOptions } from './entities/actions/omega'
 import { Address } from 'viem'
-import { ethers } from 'ethers'
 import { omegaRouterAbi } from './abis'
-import { MSG_SENDER, ADDRESS_THIS, CONTRACT_BALANCE, ROUTER_ADDRESS } from './constants'
+import { ADDRESS_THIS, CONTRACT_BALANCE, ROUTER_ADDRESS } from './constants'
+import { encodeERC721Permit, encodeDecreaseLiquidity, encodeCollect, encodeBurn } from './utils/encodeCall'
 
 export type OmegaRouterConfig = {
   sender?: string // address
@@ -40,18 +42,6 @@ export interface OmegaMintOptions {
   tokenId?: BigNumberish
 }
 
-export interface OmegaAddLiquidityOptions {
-  slippageTolerance: Percent
-  deadline: BigNumberish
-  tokenId: BigNumberish
-  useNative?: boolean
-  token0Permit: Permit2Permit
-  token1Permit: Permit2Permit
-  // Underlying amounts to wrap. If provided, will wrap underlying → boosted before increasing
-  amount0Underlying?: CurrencyAmount<Currency>
-  amount1Underlying?: CurrencyAmount<Currency>
-}
-
 export interface OmegaRemoveLiquidityOptions {
   tokenId: BigNumberish
   liquidityPercentage: Percent
@@ -62,25 +52,24 @@ export interface OmegaRemoveLiquidityOptions {
     v: number
     r: string
     s: string
-    deadline: string
+    deadline: number
   }
+  recipient: Address // Where to send the removed liquidity
   token0Unwrap?: boolean // unwrap token0 boosted → underlying
   token1Unwrap?: boolean // unwrap token1 boosted → underlying
 }
 
 export interface OmegaCollectOptions {
   tokenId: BigNumberish
-  expectedCurrencyOwed0: BigNumber
-  expectedCurrencyOwed1: BigNumber
   recipient: Address
   permit?: {
     v: number
     r: string
     s: string
-    deadline: string
+    deadline: number
   }
-  token0Unwrap?: boolean
-  token1Unwrap?: boolean
+  token0Unwrap?: boolean // unwrap token0 boosted → underlying
+  token1Unwrap?: boolean // unwrap token1 boosted → underlying
 }
 
 export abstract class OmegaRouter {
@@ -323,122 +312,131 @@ export abstract class OmegaRouter {
 
   /**
    * Produces the on-chain method name and parameters to remove liquidity from a position
+   * Supports boosted pools with automatic unwrap of ERC4626 tokens
    * @param position The position to remove liquidity from
    * @param options Options for the transaction
    */
   public static removeCallParameters(position: Position, options: OmegaRemoveLiquidityOptions): MethodParameters {
     const planner = new RoutePlanner()
 
-    const { tokenId, liquidityPercentage, slippageTolerance, deadline, burnToken, permit, token0Unwrap, token1Unwrap } =
-      options
+    const {
+      tokenId,
+      liquidityPercentage,
+      slippageTolerance,
+      deadline,
+      burnToken,
+      permit,
+      recipient,
+      token0Unwrap,
+      token1Unwrap,
+    } = options
 
     const token0 = position.pool.token0
     const token1 = position.pool.token1
     const isBoostedToken0 = token0.isBoosted
     const isBoostedToken1 = token1.isBoosted
 
-    // Calculate liquidity to remove
+    const isToken0Native = unwrappedToken(token0Unwrap && token0.isBoosted ? token0.underlying : token0).isNative
+    const isToken1Native = unwrappedToken(token1Unwrap && token1.isBoosted ? token1.underlying : token1).isNative
+
+    // ═══════════════════════════════════════════════════════════
+    // STEP 1: Calculate liquidity to remove
+    // ═══════════════════════════════════════════════════════════
     const partialPosition = new Position({
       pool: position.pool,
-      liquidity: BigNumber.from(
-        liquidityPercentage.multiply(position.liquidity.toString()).quotient.toString()
-      ).toString(),
+      liquidity: liquidityPercentage.multiply(position.liquidity).quotient,
       tickLower: position.tickLower,
       tickUpper: position.tickUpper,
     })
 
     const { amount0: amount0Min, amount1: amount1Min } = partialPosition.burnAmountsWithSlippage(slippageTolerance)
 
-    const abi = new ethers.utils.AbiCoder()
-
-    // Add permit if provided (following test pattern)
+    // ═══════════════════════════════════════════════════════════
+    // STEP 2: ERC721 Permit (if provided)
+    // ═══════════════════════════════════════════════════════════
     if (permit) {
-      const permitSignature = 'permit(address,uint256,uint256,uint8,bytes32,bytes32)'
-      const encodedParams = abi.encode(
-        ['address', 'uint256', 'uint256', 'uint8', 'bytes32', 'bytes32'],
-        [ROUTER_ADDRESS, tokenId.toString(), permit.deadline, permit.v, permit.r, permit.s]
-      )
-      const functionSelector = ethers.utils.id(permitSignature).substring(0, 10)
-      const encodedPermit = functionSelector + encodedParams.substring(2)
+      const encodedPermit = encodeERC721Permit({
+        spender: ROUTER_ADDRESS,
+        tokenId: BigNumber.from(tokenId),
+        deadline: permit.deadline.toString(),
+        v: permit.v,
+        r: permit.r,
+        s: permit.s,
+      })
       planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_PERMIT, [encodedPermit])
     }
 
-    // Decrease liquidity (following test pattern)
-    const decreaseLiquiditySignature = 'decreaseLiquidity((uint256,uint128,uint256,uint256,uint256))'
-    const DECREASE_LIQUIDITY_STRUCT =
-      '(uint256 tokenId,uint256 liquidity,uint256 amount0Min,uint256 amount1Min,uint256 deadline)'
-    const decreaseParams = abi.encode(
-      [DECREASE_LIQUIDITY_STRUCT],
-      [
-        {
-          tokenId: tokenId.toString(),
-          liquidity: partialPosition.liquidity.toString(),
-          amount0Min: amount0Min.toString(),
-          amount1Min: amount1Min.toString(),
-          deadline: deadline.toString(),
-        },
-      ]
-    )
-    const decreaseSelector = ethers.utils.id(decreaseLiquiditySignature).substring(0, 10)
-    const decreaseCall = decreaseSelector + decreaseParams.substring(2)
-    planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [decreaseCall])
-
-    // Collect tokens (following test pattern)
-    // IMPORTANT: recipient must be router.address (not ADDRESS_THIS) for tokens to be available for unwrap/sweep
-    const collectSignature = 'collect((uint256,address,uint128,uint128))'
-    const COLLECT_STRUCT = '(uint256 tokenId,address recipient,uint256 amount0Max,uint256 amount1Max)'
-    const maxUint128 = BigNumber.from(2).pow(128).sub(1).toString()
-    const collectParams = abi.encode(
-      [COLLECT_STRUCT],
-      [
-        {
-          tokenId: tokenId.toString(),
-          recipient: ROUTER_ADDRESS,
-          amount0Max: maxUint128,
-          amount1Max: maxUint128,
-        },
-      ]
-    )
-    const collectSelector = ethers.utils.id(collectSignature).substring(0, 10)
-    const collectCall = collectSelector + collectParams.substring(2)
-    planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [collectCall])
-
-    // Unwrap and send to user
-    // If boosted token AND unwrap requested: unwrap to underlying
-    // Otherwise: sweep the pool token (boosted or not) as-is
-    console.log('🔍 Token0 handling:', {
-      isBoostedToken0,
-      token0Unwrap,
-      condition: isBoostedToken0 && token0Unwrap,
-      willUse: isBoostedToken0 && token0Unwrap ? 'ERC4626_UNWRAP' : 'SWEEP',
+    // ═══════════════════════════════════════════════════════════
+    // STEP 3: Decrease Liquidity
+    // ═══════════════════════════════════════════════════════════
+    // Ensure liquidity fits in uint128 by masking to 128 bits
+    const liquidityBN = BigNumber.from(partialPosition.liquidity.toString())
+    const encodedDecreaseCall = encodeDecreaseLiquidity({
+      tokenId: BigNumber.from(tokenId),
+      liquidity: liquidityBN,
+      amount0Min: Number(amount0Min.toString()),
+      amount1Min: Number(amount1Min.toString()),
+      deadline: deadline.toString(),
     })
+    planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [encodedDecreaseCall])
 
+    // ═══════════════════════════════════════════════════════════
+    // STEP 4: Collect tokens to router
+    // ═══════════════════════════════════════════════════════════
+    // IMPORTANT: recipient must be ROUTER_ADDRESS for tokens to be available for unwrap/sweep
+    const encodedCollectCall = encodeCollect({
+      tokenId: BigNumber.from(tokenId),
+      recipient: ROUTER_ADDRESS,
+      amount0Max: MaxUint128,
+      amount1Max: MaxUint128,
+    })
+    planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [encodedCollectCall])
+
+    // ═══════════════════════════════════════════════════════════
+    // STEP 5: Unwrap or Sweep tokens to recipient
+    // ═══════════════════════════════════════════════════════════
+    // Token0: If boosted AND unwrap requested → unwrap to underlying
+    // Otherwise: sweep the pool token as-is
     if (isBoostedToken0 && token0Unwrap) {
-      planner.addCommand(CommandType.ERC4626_UNWRAP, [token0.address, MSG_SENDER, CONTRACT_BALANCE, 0])
+      planner.addCommand(CommandType.ERC4626_UNWRAP, [
+        token0.address,
+        isToken0Native ? ADDRESS_THIS : recipient,
+        CONTRACT_BALANCE,
+        0,
+      ])
+      if (isToken0Native) {
+        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
+      }
+    } else if (isToken0Native) {
+      planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
     } else {
-      planner.addCommand(CommandType.SWEEP, [token0.address, MSG_SENDER, 0])
+      planner.addCommand(CommandType.SWEEP, [token0.address, recipient, 0])
     }
 
-    console.log('🔍 Token1 handling:', {
-      isBoostedToken1,
-      token1Unwrap,
-      condition: isBoostedToken1 && token1Unwrap,
-      willUse: isBoostedToken1 && token1Unwrap ? 'ERC4626_UNWRAP' : 'SWEEP',
-    })
-
+    // Token1: If boosted AND unwrap requested → unwrap to underlying
+    // Otherwise: sweep the pool token as-is
     if (isBoostedToken1 && token1Unwrap) {
-      planner.addCommand(CommandType.ERC4626_UNWRAP, [token1.address, MSG_SENDER, CONTRACT_BALANCE, 0])
+      planner.addCommand(CommandType.ERC4626_UNWRAP, [
+        token1.address,
+        isToken1Native ? ADDRESS_THIS : recipient,
+        CONTRACT_BALANCE,
+        0,
+      ])
+      if (isToken1Native) {
+        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
+      }
+    } else if (isToken1Native) {
+      planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
     } else {
-      planner.addCommand(CommandType.SWEEP, [token1.address, MSG_SENDER, 0])
+      planner.addCommand(CommandType.SWEEP, [token1.address, recipient, 0])
     }
 
-    // Burn NFT if requested (following test pattern)
+    // ═══════════════════════════════════════════════════════════
+    // STEP 6: Burn NFT (if requested and removing 100% liquidity)
+    // ═══════════════════════════════════════════════════════════
     if (burnToken && liquidityPercentage.equalTo(new Percent(1))) {
-      const burnSignature = 'burn(uint256)'
-      const burnParams = abi.encode(['uint256'], [tokenId.toString()])
-      const burnSelector = ethers.utils.id(burnSignature).substring(0, 10)
-      const burnCall = burnSelector + burnParams.substring(2)
-      planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [burnCall])
+      const encodedBurnCall = encodeBurn(BigNumber.from(tokenId))
+      planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [encodedBurnCall])
     }
 
     return OmegaRouter.encodePlan(planner, BigNumber.from(0), { deadline })
@@ -446,63 +444,88 @@ export abstract class OmegaRouter {
 
   /**
    * Produces the on-chain method name and parameters to collect fees from a position
+   * Supports boosted pools with automatic unwrap of ERC4626 tokens
+   * @param token0 The token0 in the pool
+   * @param token1 The token1 in the pool
    * @param options Options for collecting fees
    */
   public static collectCallParameters(
-    token0Address: Address,
-    token1Address: Address,
+    token0: AnyToken,
+    token1: AnyToken,
     options: OmegaCollectOptions
   ): MethodParameters {
     const planner = new RoutePlanner()
 
     const { tokenId, recipient, permit, token0Unwrap, token1Unwrap } = options
 
-    const abi = new ethers.utils.AbiCoder()
+    const isToken0Native = unwrappedToken(token0Unwrap && token0.isBoosted ? token0.underlying : token0).isNative
+    const isToken1Native = unwrappedToken(token1Unwrap && token1.isBoosted ? token1.underlying : token1).isNative
 
-    // Add permit if provided (following test pattern)
+    // ═══════════════════════════════════════════════════════════
+    // STEP 1: ERC721 Permit (if provided)
+    // ═══════════════════════════════════════════════════════════
     if (permit) {
-      const permitSignature = 'permit(address,uint256,uint256,uint8,bytes32,bytes32)'
-      const encodedParams = abi.encode(
-        ['address', 'uint256', 'uint256', 'uint8', 'bytes32', 'bytes32'],
-        [ROUTER_ADDRESS, tokenId.toString(), permit.deadline, permit.v, permit.r, permit.s]
-      )
-      const functionSelector = ethers.utils.id(permitSignature).substring(0, 10)
-      const encodedPermit = functionSelector + encodedParams.substring(2)
+      const encodedPermit = encodeERC721Permit({
+        spender: ROUTER_ADDRESS,
+        tokenId: BigNumber.from(tokenId),
+        deadline: permit.deadline.toString(),
+        v: permit.v,
+        r: permit.r,
+        s: permit.s,
+      })
       planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_PERMIT, [encodedPermit])
     }
 
-    // Collect (following test pattern)
-    // IMPORTANT: recipient must be router.address (not ADDRESS_THIS) for tokens to be available for unwrap/sweep
-    const collectSignature = 'collect((uint256,address,uint128,uint128))'
-    const COLLECT_STRUCT = '(uint256 tokenId,address recipient,uint256 amount0Max,uint256 amount1Max)'
+    // ═══════════════════════════════════════════════════════════
+    // STEP 2: Collect fees to router
+    // ═══════════════════════════════════════════════════════════
+    // IMPORTANT: recipient must be ROUTER_ADDRESS for tokens to be available for unwrap/sweep
     const maxUint128 = BigNumber.from(2).pow(128).sub(1).toString()
-    const collectParams = abi.encode(
-      [COLLECT_STRUCT],
-      [
-        {
-          tokenId: tokenId.toString(),
-          recipient: ROUTER_ADDRESS,
-          amount0Max: maxUint128,
-          amount1Max: maxUint128,
-        },
-      ]
-    )
-    const collectSelector = ethers.utils.id(collectSignature).substring(0, 10)
-    const collectCall = collectSelector + collectParams.substring(2)
-    planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [collectCall])
+    const encodedCollectCall = encodeCollect({
+      tokenId: BigNumber.from(tokenId),
+      recipient: ROUTER_ADDRESS,
+      amount0Max: maxUint128,
+      amount1Max: maxUint128,
+    })
+    planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [encodedCollectCall])
 
-    // Unwrap and send to recipient
-    // Following test pattern: unwrap directly to final recipient if unwrap requested, otherwise sweep
+    // ═══════════════════════════════════════════════════════════
+    // STEP 3: Unwrap or Sweep tokens to recipient
+    // ═══════════════════════════════════════════════════════════
+    // Token0: If unwrap requested → unwrap boosted to underlying
+    // Otherwise: sweep the pool token as-is
     if (token0Unwrap) {
-      planner.addCommand(CommandType.ERC4626_UNWRAP, [token0Address, recipient, CONTRACT_BALANCE, 0])
+      planner.addCommand(CommandType.ERC4626_UNWRAP, [
+        token0.address,
+        isToken0Native ? ADDRESS_THIS : recipient,
+        CONTRACT_BALANCE,
+        0,
+      ])
+      if (isToken0Native) {
+        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
+      }
+    } else if (isToken0Native) {
+      planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
     } else {
-      planner.addCommand(CommandType.SWEEP, [token0Address, recipient, 0])
+      planner.addCommand(CommandType.SWEEP, [token0.address, recipient, 0])
     }
 
+    // Token1: If unwrap requested → unwrap boosted to underlying
+    // Otherwise: sweep the pool token as-is
     if (token1Unwrap) {
-      planner.addCommand(CommandType.ERC4626_UNWRAP, [token1Address, recipient, CONTRACT_BALANCE, 0])
+      planner.addCommand(CommandType.ERC4626_UNWRAP, [
+        token1.address,
+        isToken1Native ? ADDRESS_THIS : recipient,
+        CONTRACT_BALANCE,
+        0,
+      ])
+      if (isToken1Native) {
+        planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
+      }
+    } else if (isToken1Native) {
+      planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
     } else {
-      planner.addCommand(CommandType.SWEEP, [token1Address, recipient, 0])
+      planner.addCommand(CommandType.SWEEP, [token1.address, recipient, 0])
     }
 
     return OmegaRouter.encodePlan(planner, BigNumber.from(0))

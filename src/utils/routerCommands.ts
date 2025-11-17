@@ -287,8 +287,12 @@ export const COMMAND_DEFINITION: { [key in CommandType]: CommandDefinition } = {
     parser: Parser.Abi,
     params: [{ name: 'params', type: INCREASE_LIQUIDITY_PARAMS }],
   },
-  [CommandType.INTEGRAL_POSITION_MANAGER_PERMIT]: { parser: Parser.IntegralActions },
-  [CommandType.INTEGRAL_POSITION_MANAGER_CALL]: { parser: Parser.IntegralActions },
+  [CommandType.INTEGRAL_POSITION_MANAGER_PERMIT]: {
+    parser: Parser.IntegralActions,
+  },
+  [CommandType.INTEGRAL_POSITION_MANAGER_CALL]: {
+    parser: Parser.IntegralActions,
+  },
 }
 
 export class RoutePlanner {
