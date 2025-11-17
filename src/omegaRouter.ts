@@ -226,21 +226,9 @@ export abstract class OmegaRouter {
     let amount0Min = BigNumber.from(amount0MinJSBI.toString())
     let amount1Min = BigNumber.from(amount1MinJSBI.toString())
 
-    // CRITICAL: Apply rounding buffer when wrapping to account for ERC4626 previewDeposit rounding
-    if (token0NeedsWrap && token0.isBoosted && amount0Min.gt(0)) {
-      const buffer = amount0Min.div(10000) // 0.01% buffer
-      amount0Min = amount0Min.sub(buffer.gt(0) ? buffer : 1)
-    }
-
-    if (token1NeedsWrap && token1.isBoosted && amount1Min.gt(0)) {
-      const buffer = amount1Min.div(10000) // 0.01% buffer
-      amount1Min = amount1Min.sub(buffer.gt(0) ? buffer : 1)
-    }
-
     // ═══════════════════════════════════════════════════════════
     // STEP 5: Mint or Increase Liquidity
     // ═══════════════════════════════════════════════════════════
-
     if (isIncrease) {
       planner.addCommand(CommandType.INTEGRAL_INCREASE_LIQUIDITY, [
         [
@@ -369,7 +357,6 @@ export abstract class OmegaRouter {
     // ═══════════════════════════════════════════════════════════
     // STEP 3: Decrease Liquidity
     // ═══════════════════════════════════════════════════════════
-    // Ensure liquidity fits in uint128 by masking to 128 bits
     const liquidityBN = BigNumber.from(partialPosition.liquidity.toString())
     const encodedDecreaseCall = encodeDecreaseLiquidity({
       tokenId: BigNumber.from(tokenId),
