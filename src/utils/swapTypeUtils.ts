@@ -172,11 +172,11 @@ export function canPoolBeUsedForSwapType(
   tokenOut: AnyToken,
   swapType: BoostedSwapType
 ): boolean {
-  const pool0IsBoosted = pool.token0.isBoosted
-  const pool1IsBoosted = pool.token1.isBoosted
+  const isToken0Boosted = pool.token0.isBoosted
+  const isToken1Boosted = pool.token1.isBoosted
 
   // Pool must have at least one boosted token
-  if (!pool0IsBoosted && !pool1IsBoosted) {
+  if (!isToken0Boosted && !isToken1Boosted) {
     return false
   }
 
@@ -193,19 +193,22 @@ export function canPoolBeUsedForSwapType(
     // ═══════════════════════════════════════════════════════════
     case BoostedSwapType.UNDERLYING_TO_UNDERLYING: {
       // We need to find boosted versions of input and output in the pool
-      // Example: for USDC → WETH, pool should have sparkUSDC and mwETH
+      // Example: for USDC → WETH, pool should have sparkUSDC and mwETH or USDC and mwETH or sparkUSDC and WETH
 
-      // Find if pool has a boosted token whose underlying is tokenIn
+      // Check if pool has tokenIn directly OR has a boosted token whose underlying is tokenIn
+      const hasInputToken = pool.token0.equals(tokenIn) || pool.token1.equals(tokenIn)
       const hasBoostedInput =
-        (pool0IsBoosted && (pool.token0 as BoostedToken).underlying.equals(tokenIn)) ||
-        (pool1IsBoosted && (pool.token1 as BoostedToken).underlying.equals(tokenIn))
+        (isToken0Boosted && (pool.token0 as BoostedToken).underlying.equals(tokenIn)) ||
+        (isToken1Boosted && (pool.token1 as BoostedToken).underlying.equals(tokenIn))
 
-      // Find if pool has a boosted token whose underlying is tokenOut
+      // Check if pool has tokenOut directly OR has a boosted token whose underlying is tokenOut
+      const hasOutputToken = pool.token0.equals(tokenOut) || pool.token1.equals(tokenOut)
       const hasBoostedOutput =
-        (pool0IsBoosted && (pool.token0 as BoostedToken).underlying.equals(tokenOut)) ||
-        (pool1IsBoosted && (pool.token1 as BoostedToken).underlying.equals(tokenOut))
+        (isToken0Boosted && (pool.token0 as BoostedToken).underlying.equals(tokenOut)) ||
+        (isToken1Boosted && (pool.token1 as BoostedToken).underlying.equals(tokenOut))
 
-      return hasBoostedInput && hasBoostedOutput
+      // Pool must have input (direct or boosted) AND output (direct or boosted)
+      return (hasInputToken || hasBoostedInput) && (hasOutputToken || hasBoostedOutput)
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -217,8 +220,8 @@ export function canPoolBeUsedForSwapType(
       // 2. The tokenOut itself (which is already boosted)
 
       const hasBoostedInput =
-        (pool0IsBoosted && (pool.token0 as BoostedToken).underlying.equals(tokenIn)) ||
-        (pool1IsBoosted && (pool.token1 as BoostedToken).underlying.equals(tokenIn))
+        (isToken0Boosted && (pool.token0 as BoostedToken).underlying.equals(tokenIn)) ||
+        (isToken1Boosted && (pool.token1 as BoostedToken).underlying.equals(tokenIn))
 
       const hasOutputToken = pool.token0.equals(tokenOut) || pool.token1.equals(tokenOut)
 
@@ -236,8 +239,8 @@ export function canPoolBeUsedForSwapType(
       const hasInputToken = pool.token0.equals(tokenIn) || pool.token1.equals(tokenIn)
 
       const hasBoostedOutput =
-        (pool0IsBoosted && (pool.token0 as BoostedToken).underlying.equals(tokenOut)) ||
-        (pool1IsBoosted && (pool.token1 as BoostedToken).underlying.equals(tokenOut))
+        (isToken0Boosted && (pool.token0 as BoostedToken).underlying.equals(tokenOut)) ||
+        (isToken1Boosted && (pool.token1 as BoostedToken).underlying.equals(tokenOut))
 
       return hasInputToken && hasBoostedOutput
     }
