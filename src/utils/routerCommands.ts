@@ -40,6 +40,7 @@ export enum CommandType {
   INTEGRAL_MINT = 0x13,
   INTEGRAL_POSITION_MANAGER_PERMIT = 0x14,
   INTEGRAL_INCREASE_LIQUIDITY = 0x15,
+  INTEGRAL_EXACT_OUT_WRAP_INPUT = 0x16,
   // COMMAND_PLACEHOLDER = 0x16 -> 0x20
 
   // Command Types where 0x21<=value<=0x3f
@@ -247,6 +248,16 @@ export const COMMAND_DEFINITION: { [key in CommandType]: CommandDefinition } = {
     ],
   },
   [CommandType.INTEGRAL_SWAP_EXACT_OUT]: {
+    parser: Parser.Abi,
+    params: [
+      { name: 'recipient', type: 'address' },
+      { name: 'amountOut', type: 'uint256' },
+      { name: 'amountInMax', type: 'uint256' },
+      { name: 'path', type: 'bytes' },
+      { name: 'payerIsUser', type: 'bool' },
+    ],
+  },
+  [CommandType.INTEGRAL_EXACT_OUT_WRAP_INPUT]: {
     parser: Parser.Abi,
     params: [
       { name: 'recipient', type: 'address' },
