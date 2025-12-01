@@ -906,10 +906,10 @@
     exec-sh "^0.3.2"
     minimist "^1.2.0"
 
-"@cryptoalgebra/integral-sdk@npm:@cryptoalgebra/clamm-boosted-pools-sdk@^0.1.4":
-  version "0.1.4"
-  resolved "https://registry.yarnpkg.com/@cryptoalgebra/clamm-boosted-pools-sdk/-/clamm-boosted-pools-sdk-0.1.4.tgz#352d80336cfd09b42370803b12ad42b3192ad2fd"
-  integrity sha512-kR/SHxRENnqRJeTIfUpV2GWQS9v0uqn2NpJO93IrPQKaWNRfo91tLeb9ZQKQpPHNBJjyRGF9oqqkzNlhTsOtKw==
+"@cryptoalgebra/integral-sdk@npm:@cryptoalgebra/clamm-boosted-pools-sdk@^0.1.5":
+  version "0.1.5"
+  resolved "https://registry.yarnpkg.com/@cryptoalgebra/clamm-boosted-pools-sdk/-/clamm-boosted-pools-sdk-0.1.5.tgz#a1c235a02d26322f8485e68056d1590d21886fe9"
+  integrity sha512-S2SP51oE4r+cmaOUM+qEWPQYBHUS7+8x7Hl6jPOPgclNOZ4iLvUyA21/H6fNLWRw3Yo8Jrt9KEhUQPX1bhYqsg==
   dependencies:
     "@ethersproject/abi" "^5.7.0"
     "@ethersproject/address" "^5.7.0"
