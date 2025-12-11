@@ -5,7 +5,7 @@ export type TradeConfig = {
 }
 
 export enum RouterActionType {
-  OmegaTrade = 'OmegaTrade',
+  OmegaEncoder = 'OmegaEncoder',
 }
 
 // interface for entities that can be encoded as a Universal Router command

@@ -2,7 +2,6 @@ import invariant from 'tiny-invariant'
 import {
   Currency,
   MethodParameters,
-  Trade,
   TradeType,
   Position,
   Percent,
@@ -12,10 +11,8 @@ import {
   AnyToken,
 } from '@cryptoalgebra/integral-sdk'
 import { Interface } from '@ethersproject/abi'
-import { BigNumber, BigNumberish } from 'ethers'
+import { BigNumber } from 'ethers'
 import { CommandType, RoutePlanner } from './utils/routerCommands'
-import { encodePermit, Permit2Permit } from './utils/inputTokens'
-import { Address } from 'viem'
 import { omegaRouterAbi } from './abis'
 import { ADDRESS_THIS, CONTRACT_BALANCE, ROUTER_ADDRESS } from './constants'
 import {
@@ -23,73 +20,42 @@ import {
   encodeDecreaseLiquidity,
   encodeCollect,
   encodeBurn,
-  NFTPermitSignature,
+  encodePermit,
 } from './utils/encodeCall'
-import { OmegaTrade, SwapOptions } from './entities'
-
-export type OmegaRouterConfig = {
-  sender?: string // address
-  deadline?: BigNumberish
-}
-
-export interface OmegaMintOptions {
-  recipient: Address // Required for both mint and increase (for refunds)
-  slippageTolerance: Percent
-  deadline: BigNumberish
-  useNative?: boolean
-  deployer?: Address
-  token0Permit: Permit2Permit | null
-  token1Permit: Permit2Permit | null
-  // Underlying amounts to wrap. If provided, will wrap underlying → boosted before mint
-  amount0Underlying?: CurrencyAmount<Currency>
-  amount1Underlying?: CurrencyAmount<Currency>
-  // If tokenId is provided, will increase liquidity instead of minting new position
-  tokenId?: BigNumberish
-}
-
-export interface OmegaRemoveLiquidityOptions {
-  tokenId: BigNumberish
-  liquidityPercentage: Percent
-  slippageTolerance: Percent
-  deadline: BigNumberish
-  burnToken?: boolean
-  permit: NFTPermitSignature
-  recipient: Address // Where to send the removed liquidity
-  token0Unwrap?: boolean // unwrap token0 boosted → underlying
-  token1Unwrap?: boolean // unwrap token1 boosted → underlying
-}
-
-export interface OmegaCollectOptions {
-  tokenId: BigNumberish
-  recipient: Address
-  permit: NFTPermitSignature
-  token0Unwrap?: boolean // unwrap token0 boosted → underlying
-  token1Unwrap?: boolean // unwrap token1 boosted → underlying
-}
+import { OmegaTrade } from './entities/OmegaTrade'
+import { OmegaEncoder } from './entities/OmegaEncoder'
+import {
+  OmegaSwapOptions,
+  OmegaCollectOptions,
+  OmegaMintOptions,
+  OmegaRemoveLiquidityOptions,
+  OmegaRouterConfig,
+} from './types/options'
 
 export abstract class OmegaRouter {
   public static INTERFACE: Interface = new Interface(omegaRouterAbi)
 
-  public static async swapCallParameters(
-    trade: Trade<Currency, Currency, TradeType>,
-    options: SwapOptions
-  ): Promise<MethodParameters> {
+  public static swapCallParameters(
+    trade: OmegaTrade<Currency, Currency, TradeType>,
+    options: OmegaSwapOptions
+  ): MethodParameters {
     const planner = new RoutePlanner()
 
-    const omegaTrade: OmegaTrade = new OmegaTrade(trade, options)
+    const omegaEncoder: OmegaEncoder = new OmegaEncoder(trade, options)
 
-    const inputCurrency = omegaTrade.trade.inputAmount.currency
+    const inputCurrency = omegaEncoder.trade.inputAmount.currency
     invariant(!(inputCurrency.isNative && !!options.inputTokenPermit), 'NATIVE_INPUT_PERMIT')
 
     if (options.inputTokenPermit) {
-      encodePermit(planner, options.inputTokenPermit)
+      const signature = encodePermit(options.inputTokenPermit)
+      planner.addCommand(CommandType.PERMIT2_PERMIT, [options.inputTokenPermit, signature])
     }
 
     const nativeCurrencyValue = inputCurrency.isNative
-      ? BigNumber.from(omegaTrade.trade.maximumAmountIn(options.slippageTolerance).quotient.toString())
+      ? BigNumber.from(omegaEncoder.trade.maximumAmountIn(options.slippageTolerance).quotient.toString())
       : BigNumber.from(0)
 
-    await omegaTrade.encode(planner)
+    omegaEncoder.encode(planner)
     return OmegaRouter.encodePlan(planner, nativeCurrencyValue, {
       deadline: options.deadline ? BigNumber.from(options.deadline) : undefined,
     })
@@ -149,10 +115,12 @@ export abstract class OmegaRouter {
     const amount1Str = amount1ToTransfer.quotient.toString()
 
     if (token0Permit && !isToken0Native && amount0Str !== '0') {
-      encodePermit(planner, token0Permit)
+      const signature = encodePermit(token0Permit)
+      planner.addCommand(CommandType.PERMIT2_PERMIT, [token0Permit, signature])
     }
     if (token1Permit && !isToken1Native && amount1Str !== '0') {
-      encodePermit(planner, token1Permit)
+      const signature = encodePermit(token1Permit)
+      planner.addCommand(CommandType.PERMIT2_PERMIT, [token1Permit, signature])
     }
 
     // ═══════════════════════════════════════════════════════════

@@ -1,5 +1,6 @@
 import { ethers } from 'ethers'
 import { BigNumber } from 'ethers'
+import { Permit2Permit } from '../types/permit'
 
 const permitSignature = 'permit(address,uint256,uint256,uint8,bytes32,bytes32)'
 const decreaseLiquidityFunctionSignature = 'decreaseLiquidity((uint256,uint128,uint256,uint256,uint256))'
@@ -56,6 +57,22 @@ interface ERC721PermitParamsV4 {
   deadline: string
   signature: string
   nonce: number
+}
+
+const SIGNATURE_LENGTH = 65
+const EIP_2098_SIGNATURE_LENGTH = 64
+
+const encodePermit = (permit2: Permit2Permit): string => {
+  let signature = permit2.signature
+
+  const length = ethers.utils.arrayify(permit2.signature).length
+  // signature data provided for EIP-1271 may have length different from ECDSA signature
+  if (length === SIGNATURE_LENGTH || length === EIP_2098_SIGNATURE_LENGTH) {
+    // sanitizes signature to cover edge cases of malformed EIP-2098 sigs and v used as recovery id
+    signature = ethers.utils.joinSignature(ethers.utils.splitSignature(permit2.signature))
+  }
+
+  return signature
 }
 
 const encodeERC721Permit = (params: ERC721PermitParams): string => {
@@ -122,4 +139,5 @@ export {
   encodeBurn,
   encodeModifyLiquidities,
   encodeERC721PermitV4,
+  encodePermit,
 }
