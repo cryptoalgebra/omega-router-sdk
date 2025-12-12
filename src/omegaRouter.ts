@@ -52,7 +52,7 @@ export class OmegaRouter {
 
     const inputCurrency = omegaEncoder.trade.inputAmount.currency
     invariant(!(inputCurrency.isNative && !!options.inputTokenPermit), 'NATIVE_INPUT_PERMIT')
-    invariant(!inputCurrency.isNative || !!options.inputTokenPermit, 'MISSING_INPUT_PERMIT')
+    // invariant(!inputCurrency.isNative || !!options.inputTokenPermit, 'MISSING_INPUT_PERMIT')
 
     if (options.inputTokenPermit) {
       const signature = encodePermit(options.inputTokenPermit)
