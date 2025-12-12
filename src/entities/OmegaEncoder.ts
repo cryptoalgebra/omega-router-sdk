@@ -12,7 +12,7 @@ import { Pair } from '@uniswap/v2-sdk'
 import { Pool as V3Pool, encodeRouteToPath as encodeV3RouteToPath } from '@uniswap/v3-sdk'
 import { CommandType, RoutePlanner } from './../utils/routerCommands'
 import { Command, RouterActionType, TradeConfig } from '../types/command'
-import { ROUTER_ADDRESS, ADDRESS_THIS, CONTRACT_BALANCE, SOURCE_ROUTER, MSG_SENDER } from './../constants'
+import { ADDRESS_THIS, CONTRACT_BALANCE, SOURCE_ROUTER, MSG_SENDER } from './../constants'
 import { OmegaTrade } from './OmegaTrade'
 import { IRoute, Protocol, RouteIntegral, RouteV2, RouteV3 } from '../types'
 import { encodeBoostedRouteExactOutput, encodeIntegralExactOut } from '../utils/encodePath'
@@ -36,15 +36,10 @@ export class OmegaEncoder implements Command {
   readonly tradeType: RouterActionType = RouterActionType.OmegaEncoder
   readonly trade: OmegaTrade<Currency, Currency, TradeType>
   readonly options: OmegaSwapOptions
-  readonly payerIsUser: boolean
 
   constructor(trade: OmegaTrade<Currency, Currency, TradeType>, options: OmegaSwapOptions) {
     this.trade = trade
     this.options = options
-
-    // Determine if payer is user or router
-    // If input requires wrap (ETH -> WETH), router pays from wrapped balance
-    this.payerIsUser = !this.inputRequiresWrap
   }
 
   /**
@@ -71,6 +66,16 @@ export class OmegaEncoder implements Command {
       const wrapAmount = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
       planner.addCommand(CommandType.WRAP_ETH, [ROUTER_AS_RECIPIENT, wrapAmount])
       console.log(`[WRAP_ETH]: { recipient: ${ROUTER_AS_RECIPIENT}, amount: ${wrapAmount} }`)
+    } else {
+      const transferAmount = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
+      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
+        this.trade.inputAmount.currency.wrapped.address,
+        ROUTER_AS_RECIPIENT,
+        transferAmount,
+      ])
+      console.log(
+        `[PERMIT2_TRANSFER_FROM]: { token: ${this.trade.inputAmount.currency.wrapped.address}, recipient: ${ROUTER_AS_RECIPIENT}, amount: ${transferAmount} }`
+      )
     }
 
     // Set default recipient
@@ -160,12 +165,12 @@ export class OmegaEncoder implements Command {
         inputAmount.quotient.toString(),
         minAmountOut,
         path,
-        this.payerIsUser,
+        SOURCE_ROUTER,
       ])
       console.log(
         `[V2_SWAP_EXACT_IN]: { recipient: ${recipient}, inputAmount: ${inputAmount.quotient.toString()}, minAmountOut: ${minAmountOut}, path: ${path.join(
           ' -> '
-        )}, payerIsUser: ${this.payerIsUser} }`
+        )}, payerIsUser: ${SOURCE_ROUTER} }`
       )
     } else {
       const recipient = routerMustCustody ? ROUTER_AS_RECIPIENT : this.options.recipient
@@ -176,12 +181,12 @@ export class OmegaEncoder implements Command {
         outputAmount.quotient.toString(),
         maxAmountIn,
         path,
-        this.payerIsUser,
+        SOURCE_ROUTER,
       ])
       console.log(
         `[V2_SWAP_EXACT_OUT]: { recipient: ${recipient}, outputAmount: ${outputAmount.quotient.toString()}, maxAmountIn: ${maxAmountIn}, path: ${path.join(
           ' -> '
-        )}, payerIsUser: ${this.payerIsUser} }`
+        )}, payerIsUser: ${SOURCE_ROUTER} }`
       )
     }
   }
@@ -208,12 +213,10 @@ export class OmegaEncoder implements Command {
         inputAmount.quotient.toString(),
         minAmountOut,
         path,
-        this.payerIsUser,
+        SOURCE_ROUTER,
       ])
       console.log(
-        `[UNISWAP_V3_SWAP_EXACT_IN]: { recipient: ${recipient}, inputAmount: ${inputAmount.quotient.toString()}, minAmountOut: ${minAmountOut}, path: ${path}, payerIsUser: ${
-          this.payerIsUser
-        } }`
+        `[UNISWAP_V3_SWAP_EXACT_IN]: { recipient: ${recipient}, inputAmount: ${inputAmount.quotient.toString()}, minAmountOut: ${minAmountOut}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
       )
     } else {
       const recipient = routerMustCustody ? ROUTER_AS_RECIPIENT : this.options.recipient
@@ -223,12 +226,10 @@ export class OmegaEncoder implements Command {
         outputAmount.quotient.toString(),
         maxAmountIn,
         path,
-        this.payerIsUser,
+        SOURCE_ROUTER,
       ])
       console.log(
-        `[UNISWAP_V3_SWAP_EXACT_OUT]: { recipient: ${recipient}, outputAmount: ${outputAmount.quotient.toString()}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${
-          this.payerIsUser
-        } }`
+        `[UNISWAP_V3_SWAP_EXACT_OUT]: { recipient: ${recipient}, outputAmount: ${outputAmount.quotient.toString()}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
       )
     }
   }
@@ -255,12 +256,10 @@ export class OmegaEncoder implements Command {
         inputAmount.quotient.toString(),
         minAmountOut,
         path,
-        this.payerIsUser,
+        SOURCE_ROUTER,
       ])
       console.log(
-        `[INTEGRAL_SWAP_EXACT_IN]: { recipient: ${recipient}, inputAmount: ${inputAmount.quotient.toString()}, minAmountOut: ${minAmountOut}, path: ${path}, payerIsUser: ${
-          this.payerIsUser
-        } }`
+        `[INTEGRAL_SWAP_EXACT_IN]: { recipient: ${recipient}, inputAmount: ${inputAmount.quotient.toString()}, minAmountOut: ${minAmountOut}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
       )
     } else {
       const path = encodeIntegralExactOut(integralRoute)
@@ -271,12 +270,10 @@ export class OmegaEncoder implements Command {
         outputAmount.quotient.toString(),
         maxAmountIn,
         path,
-        this.payerIsUser,
+        SOURCE_ROUTER,
       ])
       console.log(
-        `[INTEGRAL_SWAP_EXACT_OUT]: { recipient: ${recipient}, outputAmount: ${outputAmount.quotient.toString()}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${
-          this.payerIsUser
-        } }`
+        `[INTEGRAL_SWAP_EXACT_OUT]: { recipient: ${recipient}, outputAmount: ${outputAmount.quotient.toString()}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
       )
     }
   }
@@ -316,18 +313,9 @@ export class OmegaEncoder implements Command {
       ? BigInt(0)
       : BigInt(this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString())
 
-    const isInputNative = route.input.isNative
     const isOutputNative = route.output.isNative
 
     const shouldUnwrapOutput = isOutputNative && !routerMustCustody
-
-    // Transfer input token to router if not already done (for non-native, non-first swap)
-    if (!isInputNative && this.trade.swaps.indexOf(swap as any) === 0) {
-      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [route.input.wrapped.address, ROUTER_ADDRESS, amount])
-      console.log(
-        `[PERMIT2_TRANSFER_FROM]: { token: ${route.input.wrapped.address}, recipient: ${ROUTER_ADDRESS}, amount: ${amount} }`
-      )
-    }
 
     // Process each step
     for (let i = 0; i < steps.length; i++) {
@@ -408,9 +396,9 @@ export class OmegaEncoder implements Command {
     const path = encodeBoostedRouteExactOutput(route)
 
     // Single command handles all wrap/unwrap/swap operations
-    planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [recipient, amountOut, maxAmountIn, path, this.payerIsUser])
+    planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [recipient, amountOut, maxAmountIn, path, SOURCE_ROUTER])
     console.log(
-      `[INTEGRAL_SWAP_EXACT_OUT]: { recipient: ${recipient}, amountOut: ${amountOut}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${this.payerIsUser} }`
+      `[INTEGRAL_SWAP_EXACT_OUT]: { recipient: ${recipient}, amountOut: ${amountOut}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
     )
   }
 }

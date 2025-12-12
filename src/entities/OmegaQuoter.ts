@@ -4,21 +4,20 @@ import {
   BoostedRoute as IntegralBoostedRoute,
   BoostedRouteStepType,
   Route as IntegralRoute,
+  encodeRouteToPath as encodeIntegralRouteToPath,
+  type BoostedRouteStep,
 } from '@cryptoalgebra/integral-sdk'
 import { Route as V2Route } from '@uniswap/v2-sdk'
-import { Route as V3Route } from '@uniswap/v3-sdk'
+import { Route as V3Route, encodeRouteToPath as encodeV3RouteToPath } from '@uniswap/v3-sdk'
 import { Address, Hex, PublicClient } from 'viem'
 import { omegaQuoterAbi } from '../abis'
 import {
-  buildQuoterCommands,
-  buildV2QuoterCommands,
-  buildV3QuoterCommands,
-  buildIntegralQuoterCommands,
-  buildBoostedExactInQuoterCommands,
-  buildBoostedExactOutQuoterCommands,
   decodeSwapOutput,
   decodeAmountOutput,
   getRouteType,
+  encodeSwapInput,
+  encodeWrapInput,
+  commandsToHex,
   type AnyRoute,
 } from '../utils/quoterEncoder'
 import {
@@ -28,6 +27,9 @@ import {
   SimulateContractResult,
   QuoterContractCall,
 } from '../types/quoter'
+import { QuoterCommandType } from '../utils/quoterCommands'
+import { encodeBoostedRouteExactOutput, encodeIntegralExactOut } from '../utils/encodePath'
+import { CONTRACT_BALANCE } from '../constants'
 import { Protocol } from '../types'
 
 /**
@@ -48,24 +50,47 @@ export class OmegaQuoter {
   }
 
   /**
-   * Build quoter commands for any route type
+   * Build quoter commands for any route type.
+   * Automatically detects route type from instance.
    */
   static buildCommands(route: AnyRoute, amount: bigint, exactInput: boolean): QuoterCommands {
-    return buildQuoterCommands(route, amount, exactInput)
+    const routeType = getRouteType(route)
+
+    switch (routeType) {
+      case Protocol.V2:
+        return OmegaQuoter.buildV2QuoterCommands(route as V2Route<Currency, Currency>, amount, exactInput)
+
+      case Protocol.V3:
+        return OmegaQuoter.buildV3QuoterCommands(route as V3Route<Currency, Currency>, amount, exactInput)
+
+      case Protocol.INTEGRAL:
+        return OmegaQuoter.buildIntegralQuoterCommands(route as IntegralRoute<Currency, Currency>, amount, exactInput)
+
+      case Protocol.INTEGRAL_BOOSTED: {
+        const boostedRoute = route as IntegralBoostedRoute<Currency, Currency>
+
+        return exactInput
+          ? OmegaQuoter.buildBoostedExactInQuoterCommands(boostedRoute, amount)
+          : OmegaQuoter.buildBoostedExactOutQuoterCommands(boostedRoute, amount)
+      }
+
+      default:
+        throw new Error(`Unsupported route type: ${routeType}`)
+    }
   }
 
   /**
    * Build quoter commands for V2 route
    */
   static buildV2Commands(route: V2Route<Currency, Currency>, amount: bigint, exactInput: boolean): QuoterCommands {
-    return buildV2QuoterCommands(route, amount, exactInput)
+    return OmegaQuoter.buildV2QuoterCommands(route, amount, exactInput)
   }
 
   /**
    * Build quoter commands for V3 route
    */
   static buildV3Commands(route: V3Route<Currency, Currency>, amount: bigint, exactInput: boolean): QuoterCommands {
-    return buildV3QuoterCommands(route, amount, exactInput)
+    return OmegaQuoter.buildV3QuoterCommands(route, amount, exactInput)
   }
 
   /**
@@ -76,7 +101,7 @@ export class OmegaQuoter {
     amount: bigint,
     exactInput: boolean
   ): QuoterCommands {
-    return buildIntegralQuoterCommands(route, amount, exactInput)
+    return OmegaQuoter.buildIntegralQuoterCommands(route, amount, exactInput)
   }
 
   /**
@@ -88,8 +113,8 @@ export class OmegaQuoter {
     exactInput: boolean
   ): QuoterCommands {
     return exactInput
-      ? buildBoostedExactInQuoterCommands(route, amount)
-      : buildBoostedExactOutQuoterCommands(route, amount)
+      ? OmegaQuoter.buildBoostedExactInQuoterCommands(route, amount)
+      : OmegaQuoter.buildBoostedExactOutQuoterCommands(route, amount)
   }
 
   /**
@@ -257,5 +282,152 @@ export class OmegaQuoter {
       gasEstimate, // gasEstimate
       [], // fees
     ]
+  }
+
+  /**
+   * Build quoter commands for V2 route
+   */
+  private static buildV2QuoterCommands(
+    route: V2Route<Currency, Currency>,
+    amount: bigint,
+    exactInput: boolean
+  ): QuoterCommands {
+    const path = route.path.map((token) => token.wrapped.address)
+    // V2 path is reversed for exactOutput
+    const encodedPath = exactInput ? path : [...path].reverse()
+    const pathHex = ('0x' + encodedPath.map((addr) => addr.slice(2).toLowerCase()).join('')) as Hex
+
+    const command = exactInput ? QuoterCommandType.V2_SWAP_EXACT_IN : QuoterCommandType.V2_SWAP_EXACT_OUT
+
+    return {
+      commands: commandsToHex([command]),
+      inputs: [encodeSwapInput(amount, pathHex)],
+    }
+  }
+
+  /**
+   * Build quoter commands for V3 route
+   */
+  private static buildV3QuoterCommands(
+    route: V3Route<Currency, Currency>,
+    amount: bigint,
+    exactInput: boolean
+  ): QuoterCommands {
+    const path = encodeV3RouteToPath(route, !exactInput) as Hex
+    const command = exactInput
+      ? QuoterCommandType.UNISWAP_V3_SWAP_EXACT_IN
+      : QuoterCommandType.UNISWAP_V3_SWAP_EXACT_OUT
+
+    return {
+      commands: commandsToHex([command]),
+      inputs: [encodeSwapInput(amount, path)],
+    }
+  }
+
+  /**
+   * Build quoter commands for Integral route
+   */
+  private static buildIntegralQuoterCommands(
+    route: IntegralRoute<Currency, Currency>,
+    amount: bigint,
+    exactInput: boolean
+  ): QuoterCommands {
+    // ExactInput uses standard path encoding, ExactOut uses boosted path format
+    const path = exactInput ? (encodeIntegralRouteToPath(route, false) as Hex) : (encodeIntegralExactOut(route) as Hex)
+    const command = exactInput ? QuoterCommandType.INTEGRAL_SWAP_EXACT_IN : QuoterCommandType.INTEGRAL_SWAP_EXACT_OUT
+
+    return {
+      commands: commandsToHex([command]),
+      inputs: [encodeSwapInput(amount, path)],
+    }
+  }
+
+  /**
+   * Build quoter commands for Boosted route (ExactInput)
+   * Processes steps forward with step-by-step commands
+   */
+  private static buildBoostedExactInQuoterCommands(
+    route: IntegralBoostedRoute<Currency, Currency>,
+    amount: bigint
+  ): QuoterCommands {
+    const { steps } = route
+    const commands: number[] = []
+    const inputs: Hex[] = []
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i]
+      const stepAmount = i === 0 ? amount : CONTRACT_BALANCE
+      const { command, input } = OmegaQuoter.encodeBoostedStep(step, stepAmount, true)
+      commands.push(command)
+      inputs.push(input)
+    }
+
+    return {
+      commands: commandsToHex(commands),
+      inputs,
+    }
+  }
+
+  /**
+   * Build quoter commands for Boosted route (ExactOutput)
+   * Uses single INTEGRAL_SWAP_EXACT_OUT with encoded path
+   */
+  private static buildBoostedExactOutQuoterCommands(
+    route: IntegralBoostedRoute<Currency, Currency>,
+    amount: bigint
+  ): QuoterCommands {
+    // if wrap or unwrap
+    if (route.pools.length === 0) {
+      const step = route.steps[0]
+      const { command, input } = OmegaQuoter.encodeBoostedStep(step, amount, false)
+
+      return {
+        commands: commandsToHex([command]),
+        inputs: [input],
+      }
+    }
+
+    const path = encodeBoostedRouteExactOutput(route) as Hex
+
+    return {
+      commands: commandsToHex([QuoterCommandType.INTEGRAL_SWAP_EXACT_OUT]),
+      inputs: [encodeSwapInput(amount, path)],
+    }
+  }
+
+  /**
+   * Encode a single boosted step for quoter
+   */
+  private static encodeBoostedStep(
+    step: BoostedRouteStep,
+    amount: bigint,
+    exactInput: boolean
+  ): { command: number; input: Hex } {
+    switch (step.type) {
+      case BoostedRouteStepType.WRAP: {
+        const wrapper = step.tokenOut.address as Address
+        return {
+          command: QuoterCommandType.ERC4626_WRAP,
+          input: encodeWrapInput(wrapper, amount),
+        }
+      }
+
+      case BoostedRouteStepType.UNWRAP: {
+        const wrapper = step.tokenIn.address as Address
+        return {
+          command: QuoterCommandType.ERC4626_UNWRAP,
+          input: encodeWrapInput(wrapper, amount),
+        }
+      }
+
+      case BoostedRouteStepType.SWAP: {
+        const swapRoute = new IntegralRoute([step.pool], step.tokenIn, step.tokenOut)
+        const path = encodeIntegralRouteToPath(swapRoute, !exactInput) as Hex
+        return {
+          command: exactInput ? QuoterCommandType.INTEGRAL_SWAP_EXACT_IN : QuoterCommandType.INTEGRAL_SWAP_EXACT_OUT,
+          input: encodeSwapInput(amount, path),
+        }
+      }
+    }
   }
 }

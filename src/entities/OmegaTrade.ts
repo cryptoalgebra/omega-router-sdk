@@ -109,6 +109,7 @@ export class OmegaTrade<TInput extends Currency, TOutput extends Currency, TTrad
     // wrap integral boosted routes
     for (const { route: routeIntegralBoosted, inputAmount, outputAmount } of integralBoostedRoutes) {
       const route = new RouteIntegralBoosted(routeIntegralBoosted)
+
       this.routes.push(route as any)
       this.swaps.push({
         route: route as any,
@@ -116,6 +117,7 @@ export class OmegaTrade<TInput extends Currency, TOutput extends Currency, TTrad
         outputAmount,
       })
     }
+
     // for (const { mixedRoute, inputAmount, outputAmount } of mixedRoutes) {
     //   const route = new MixedRoute(mixedRoute)
     //   this.routes.push(route)
