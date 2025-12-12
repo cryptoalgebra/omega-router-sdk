@@ -52,10 +52,12 @@ export class OmegaRouter {
 
     const inputCurrency = omegaEncoder.trade.inputAmount.currency
     invariant(!(inputCurrency.isNative && !!options.inputTokenPermit), 'NATIVE_INPUT_PERMIT')
-    invariant(!inputCurrency.isNative && options.inputTokenPermit, 'MISSING_INPUT_PERMIT')
+    invariant(!inputCurrency.isNative || !!options.inputTokenPermit, 'MISSING_INPUT_PERMIT')
 
-    const signature = encodePermit(options.inputTokenPermit)
-    planner.addCommand(CommandType.PERMIT2_PERMIT, [options.inputTokenPermit, signature])
+    if (options.inputTokenPermit) {
+      const signature = encodePermit(options.inputTokenPermit)
+      planner.addCommand(CommandType.PERMIT2_PERMIT, [options.inputTokenPermit, signature])
+    }
 
     const nativeCurrencyValue = inputCurrency.isNative
       ? BigNumber.from(omegaEncoder.trade.maximumAmountIn(options.slippageTolerance).quotient.toString())
