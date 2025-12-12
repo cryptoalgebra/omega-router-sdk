@@ -182,6 +182,7 @@ export class OmegaQuoter {
     // Parse results
     return results.map((result, index) => {
       if (result.status === 'failure' || !result.result) {
+        console.warn(`[OmegaQuoter] Quote failed for route [${index}]. Args: ${calls[index].args}`)
         return null
       }
 

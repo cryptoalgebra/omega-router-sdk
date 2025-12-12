@@ -147,14 +147,22 @@ export function encodeBoostedRouteExactOutput(route: BoostedRoute<Currency, Curr
 
     const stepAfter = swapIdx < steps.length - 1 ? steps[swapIdx + 1] : null
 
+    // Check step after swap for output wrap action
     if (stepAfter?.type === BoostedRouteStepType.UNWRAP) {
       wrapOut = WrapAction.UNWRAP
       tokenOut = stepAfter.tokenOut.address // underlying token
+    } else if (stepAfter?.type === BoostedRouteStepType.WRAP) {
+      wrapOut = WrapAction.WRAP
+      tokenOut = stepAfter.tokenOut.address // wrapped/boosted token
     }
 
+    // Check step before swap for input wrap action
     if (stepBefore?.type === BoostedRouteStepType.WRAP) {
       wrapIn = WrapAction.WRAP
       tokenIn = stepBefore.tokenIn.address // underlying token
+    } else if (stepBefore?.type === BoostedRouteStepType.UNWRAP) {
+      wrapIn = WrapAction.UNWRAP
+      tokenIn = stepBefore.tokenIn.address // wrapped/boosted token
     }
 
     // Pool tokens are what the pool actually trades
