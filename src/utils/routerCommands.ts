@@ -6,14 +6,6 @@ import { defaultAbiCoder } from 'ethers/lib/utils'
  * @enum {number}
  */
 export enum CommandType {
-  // Masks to extract certain bits of commands
-  // FLAG_ALLOW_REVERT = 0x80,
-  // COMMAND_TYPE_MASK = 0x3f,
-
-  // Command Types. Maximum supported command at this moment is 0x3f.
-  // The commands are executed in nested if blocks to minimise gas consumption
-
-  // Command Types where value<=0x07, executed in the first nested-if block
   INTEGRAL_SWAP_EXACT_IN = 0x00,
   INTEGRAL_SWAP_EXACT_OUT = 0x01,
   PERMIT2_TRANSFER_FROM = 0x02,
@@ -23,7 +15,6 @@ export enum CommandType {
   PAY_PORTION = 0x06,
   ERC4626_WRAP = 0x07,
 
-  // Command Types where 0x08<=value<=0x0f, executed in the second nested-if block
   V2_SWAP_EXACT_IN = 0x08,
   V2_SWAP_EXACT_OUT = 0x09,
   PERMIT2_PERMIT = 0x0a,
@@ -33,19 +24,14 @@ export enum CommandType {
   BALANCE_CHECK_ERC20 = 0x0e,
   ERC4626_UNWRAP = 0x0f,
 
-  // Command Types where 0x10<=value<=0x20, executed in the third nested-if block
   UNISWAP_V3_SWAP_EXACT_IN = 0x10,
   UNISWAP_V3_SWAP_EXACT_OUT = 0x11,
   INTEGRAL_POSITION_MANAGER_CALL = 0x12,
   INTEGRAL_MINT = 0x13,
   INTEGRAL_POSITION_MANAGER_PERMIT = 0x14,
   INTEGRAL_INCREASE_LIQUIDITY = 0x15,
-  INTEGRAL_EXACT_OUT_WRAP_INPUT = 0x16,
-  // COMMAND_PLACEHOLDER = 0x16 -> 0x20
 
-  // Command Types where 0x21<=value<=0x3f
   EXECUTE_SUB_PLAN = 0x21,
-  // COMMAND_PLACEHOLDER for 0x22 to 0x3f
 }
 
 export enum Subparser {
@@ -248,16 +234,6 @@ export const COMMAND_DEFINITION: { [key in CommandType]: CommandDefinition } = {
     ],
   },
   [CommandType.INTEGRAL_SWAP_EXACT_OUT]: {
-    parser: Parser.Abi,
-    params: [
-      { name: 'recipient', type: 'address' },
-      { name: 'amountOut', type: 'uint256' },
-      { name: 'amountInMax', type: 'uint256' },
-      { name: 'path', type: 'bytes' },
-      { name: 'payerIsUser', type: 'bool' },
-    ],
-  },
-  [CommandType.INTEGRAL_EXACT_OUT_WRAP_INPUT]: {
     parser: Parser.Abi,
     params: [
       { name: 'recipient', type: 'address' },

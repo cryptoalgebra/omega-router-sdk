@@ -1,0 +1,14 @@
+/**
+ * OmegaQuoter command types
+ */
+export enum QuoterCommandType {
+  INTEGRAL_SWAP_EXACT_IN = 0x00,
+  INTEGRAL_SWAP_EXACT_OUT = 0x01,
+  ERC4626_WRAP = 0x07,
+  V2_SWAP_EXACT_IN = 0x08,
+  V2_SWAP_EXACT_OUT = 0x09,
+  ERC4626_UNWRAP = 0x0f,
+  UNISWAP_V3_SWAP_EXACT_IN = 0x10,
+  UNISWAP_V3_SWAP_EXACT_OUT = 0x11,
+  EXECUTE_SUB_PLAN = 0x21,
+}

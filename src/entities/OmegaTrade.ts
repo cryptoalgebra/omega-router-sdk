@@ -1,299 +1,664 @@
+import invariant from 'tiny-invariant'
 import {
+  CurrencyAmount,
   Currency,
   TradeType,
-  SwapOptions as RouterSwapOptions,
-  Trade,
-  Route,
-  encodeRouteToPath,
-  BoostedRoute,
-  BoostedRouteStep,
-  BoostedRouteStepType,
+  Pool as IntegralPool,
+  Route as IntegralRouteSDK,
+  BoostedRoute as IntegralBoostedRouteSDK,
+  Trade as IntegralTradeSDK,
+  Price,
+  Percent,
+  WNATIVE,
+  Fraction,
+  ZERO,
+  ONE,
+  computeCustomPoolAddress,
 } from '@cryptoalgebra/integral-sdk'
-import { CommandType, RoutePlanner } from '../utils/routerCommands'
-import { Command, RouterActionType } from './Command'
-import { Permit2Permit } from '../utils/inputTokens'
-import { ROUTER_ADDRESS, ADDRESS_THIS, CONTRACT_BALANCE, SOURCE_ROUTER } from '../constants'
+import { Pair, Route as V2RouteSDK, Trade as V2TradeSDK } from '@uniswap/v2-sdk'
+import { Pool as V3Pool, Route as V3RouteSDK, Trade as V3TradeSDK } from '@uniswap/v3-sdk'
+import { CurrencyAmount as UniswapCurrencyAmount } from '@uniswap/sdk-core'
+import { IRoute, RouteIntegral, RouteIntegralBoosted, RouteV2, RouteV3 } from '../utils'
 
-// the existing router permit object doesn't include enough data for permit2
-// so we extend swap options with the permit2 permit
-export type SwapOptions = Omit<RouterSwapOptions, 'inputTokenPermit'> & {
-  inputTokenPermit?: Permit2Permit
-
-  /**
-   * Expected output amounts for each step (ExactOutput boosted routes).
-   * Array in execution order: [step0_out, step1_out, ..., final_out]
-   * Calculate using quoter working backwards from desired output.
-   */
-  stepAmountsOut?: string[]
-}
-
-/**
- * OmegaTrade — universal class for regular and boosted integral routes.
- * Supports regular Routes and BoostedRoutes with automatic ERC4626 wrap/unwrap.
- */
-export class OmegaTrade implements Command {
-  readonly tradeType: RouterActionType = RouterActionType.OmegaTrade
-  readonly trade: Trade<Currency, Currency, TradeType>
-  readonly options: SwapOptions
-
-  constructor(trade: Trade<Currency, Currency, TradeType>, options: SwapOptions) {
-    this.trade = trade
-    this.options = options
-  }
+export class OmegaTrade<TInput extends Currency, TOutput extends Currency, TTradeType extends TradeType> {
+  public readonly routes: IRoute<TInput, TOutput, Pair | V3Pool | IntegralPool>[]
+  public readonly tradeType: TTradeType
+  private _outputAmount: CurrencyAmount<TOutput> | undefined
+  private _inputAmount: CurrencyAmount<TInput> | undefined
+  private _nativeInputRoutes: IRoute<TInput, TOutput, Pair | V3Pool | IntegralPool>[] | undefined
+  private _wethInputRoutes: IRoute<TInput, TOutput, Pair | V3Pool | IntegralPool>[] | undefined
 
   /**
-   * Main encode — adds commands to planner.
+   * The swaps of the trade, i.e. which routes and how much is swapped in each that
+   * make up the trade. May consist of swaps in v2 or v3.
    */
-  public encode(planner: RoutePlanner) {
-    const { route } = this.trade.swaps[0] as { route: BoostedRoute<Currency, Currency> | Route<Currency, Currency> }
-    const exactInput = this.trade.tradeType === TradeType.EXACT_INPUT
+  public readonly swaps: {
+    route: IRoute<TInput, TOutput, Pair | V3Pool | IntegralPool>
+    inputAmount: CurrencyAmount<TInput>
+    outputAmount: CurrencyAmount<TOutput>
+  }[]
 
-    if (route.isBoosted) {
-      this.encodeBoostedRoute(planner, route, exactInput)
-    } else {
-      this.encodeRegularRoute(planner, route, exactInput)
+  //  construct a trade across v2 and v3 routes from pre-computed amounts
+  public constructor({
+    v2Routes = [],
+    v3Routes = [],
+    integralRoutes = [],
+    integralBoostedRoutes = [],
+    // mixedRoutes = [],
+    tradeType,
+  }: {
+    v2Routes?: {
+      route: V2RouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[]
+    v3Routes?: {
+      route: V3RouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[]
+    integralRoutes?: {
+      route: IntegralRouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[]
+    integralBoostedRoutes?: {
+      route: IntegralBoostedRouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[]
+    // mixedRoutes?: {
+    //   mixedRoute: MixedRouteSDK<TInput, TOutput>
+    //   inputAmount: CurrencyAmount<TInput>
+    //   outputAmount: CurrencyAmount<TOutput>
+    // }[]
+    tradeType: TTradeType
+  }) {
+    this.swaps = []
+    this.routes = []
+    // wrap v2 routes
+    for (const { route: routev2, inputAmount, outputAmount } of v2Routes) {
+      const route = new RouteV2(routev2)
+      this.routes.push(route)
+      this.swaps.push({
+        route,
+        inputAmount,
+        outputAmount,
+      })
     }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // REGULAR ROUTE (non-boosted)
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  private encodeRegularRoute(planner: RoutePlanner, route: Route<Currency, Currency>, exactInput: boolean) {
-    const recipient = this.options.recipient
-    const isInputNative = route.input.isNative
-    const isOutputNative = route.output.isNative
-    const path = encodeRouteToPath(route, !exactInput)
-
-    if (exactInput) {
-      const amountIn = this.trade.inputAmount.quotient.toString()
-      const minAmountOut = this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString()
-
-      this.transferInputToken(planner, route.input.wrapped.address, amountIn.toString(), isInputNative)
-
-      const swapRecipient = isOutputNative ? ADDRESS_THIS : recipient
-      planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
-        swapRecipient,
-        amountIn.toString(),
-        minAmountOut.toString(),
-        path,
-        false,
-      ])
-
-      this.unwrapOutputIfNative(planner, recipient, isOutputNative)
-    } else {
-      const amountOut = this.trade.outputAmount.quotient.toString()
-      const maxAmountIn = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
-
-      this.transferInputToken(planner, route.input.wrapped.address, maxAmountIn.toString(), isInputNative)
-
-      const swapRecipient = isOutputNative ? ADDRESS_THIS : recipient
-      planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [
-        swapRecipient,
-        amountOut.toString(),
-        maxAmountIn.toString(),
-        path,
-        false,
-      ])
-
-      this.unwrapOutputIfNative(planner, recipient, isOutputNative)
-      this.sweepUnusedInput(planner, route.input.wrapped.address, recipient, isInputNative)
+    // wrap v3 routes
+    for (const { route: routev3, inputAmount, outputAmount } of v3Routes) {
+      const route = new RouteV3(routev3)
+      this.routes.push(route)
+      this.swaps.push({
+        route,
+        inputAmount,
+        outputAmount,
+      })
     }
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // BOOSTED ROUTE (with ERC4626 wrap/unwrap)
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  private encodeBoostedRoute(planner: RoutePlanner, route: BoostedRoute<Currency, Currency>, exactInput: boolean) {
-    const recipient = this.options.recipient
-
-    if (exactInput) {
-      this.encodeBoostedExactInput(planner, route, recipient)
-    } else {
-      this.encodeBoostedExactOutput(planner, route, recipient)
+    // wrap integral routes
+    for (const { route: routeIntegral, inputAmount, outputAmount } of integralRoutes) {
+      const route = new RouteIntegral(routeIntegral)
+      this.routes.push(route as any)
+      this.swaps.push({
+        route: route as any,
+        inputAmount,
+        outputAmount,
+      })
     }
-  }
+    // wrap integral boosted routes
+    for (const { route: routeIntegralBoosted, inputAmount, outputAmount } of integralBoostedRoutes) {
+      const route = new RouteIntegralBoosted(routeIntegralBoosted)
 
-  /**
-   * ExactInput: Process steps forward, each step output feeds into next step input
-   */
-  private encodeBoostedExactInput(planner: RoutePlanner, route: BoostedRoute<Currency, Currency>, recipient: string) {
-    const { steps } = route
-    const amount = this.trade.inputAmount.quotient.toString()
-    const minAmountOut = this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString()
-
-    const isInputNative = route.input.isNative
-    const isOutputNative = route.output.isNative
-
-    // Transfer input token to router
-    this.transferInputToken(planner, route.input.wrapped.address, amount, isInputNative)
-
-    // Process each step
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i]
-      const isFirstStep = i === 0
-      const isLastStep = i === steps.length - 1
-
-      const stepRecipient = isLastStep ? (isOutputNative ? ADDRESS_THIS : recipient) : ADDRESS_THIS
-      const stepAmount = isFirstStep ? amount : CONTRACT_BALANCE
-      const stepMinAmountOut = isLastStep ? minAmountOut : '0'
-
-      this.encodeStep(planner, step, stepAmount, '0', stepMinAmountOut, stepRecipient, false)
+      this.routes.push(route as any)
+      this.swaps.push({
+        route: route as any,
+        inputAmount,
+        outputAmount,
+      })
     }
 
-    // Unwrap output to native if needed
-    this.unwrapOutputIfNative(planner, recipient, isOutputNative)
-  }
+    // for (const { mixedRoute, inputAmount, outputAmount } of mixedRoutes) {
+    //   const route = new MixedRoute(mixedRoute)
+    //   this.routes.push(route)
+    //   this.swaps.push({
+    //     route,
+    //     inputAmount,
+    //     outputAmount,
+    //   })
+    // }
 
-  /**
-   * ExactOutput for boosted routes (single SWAP only).
-   * Requires stepAmountsOut from quoter for precise amounts at each step.
-   */
-  private encodeBoostedExactOutput(planner: RoutePlanner, route: BoostedRoute<Currency, Currency>, recipient: string) {
-    const { steps } = route
-    const { stepAmountsOut } = this.options
-
-    // Validate: only one SWAP allowed for ExactOutput
-    const swapCount = steps.filter((s) => s.type === BoostedRouteStepType.SWAP).length
-    if (swapCount !== 1) {
-      throw new Error(
-        `ExactOutput boosted routes support exactly 1 SWAP, got ${swapCount}. Use ExactInput for multi-SWAP routes.`
-      )
+    if (this.swaps.length === 0) {
+      throw new Error('No routes provided when calling Trade constructor')
     }
 
-    if (!stepAmountsOut || stepAmountsOut.length !== steps.length) {
-      throw new Error(`ExactOutput boosted route requires stepAmountsOut array with ${steps.length} elements.`)
-    }
+    this.tradeType = tradeType
 
-    const maxAmountIn = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
-    const minAmountOut = this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString()
+    // each route must have the same input and output currency
+    const inputCurrency = this.swaps[0].inputAmount.currency
+    const outputCurrency = this.swaps[0].outputAmount.currency
+    invariant(
+      this.swaps.every(({ route }) => inputCurrency.wrapped.equals(route.input.wrapped)),
+      'INPUT_CURRENCY_MATCH'
+    )
+    invariant(
+      this.swaps.every(({ route }) => outputCurrency.wrapped.equals(route.output.wrapped)),
+      'OUTPUT_CURRENCY_MATCH'
+    )
 
-    const isInputNative = route.input.isNative
-    const isOutputNative = route.output.isNative
-
-    this.transferInputToken(planner, route.input.wrapped.address, maxAmountIn, isInputNative)
-
-    for (let i = 0; i < steps.length; i++) {
-      const step = steps[i]
-      const isFirstStep = i === 0
-      const isLastStep = i === steps.length - 1
-
-      const stepRecipient = isLastStep ? (isOutputNative ? ADDRESS_THIS : recipient) : ADDRESS_THIS
-      const stepAmountIn = isFirstStep ? maxAmountIn : CONTRACT_BALANCE
-      const stepAmountOut = stepAmountsOut[i]
-      const stepMinOut = isLastStep ? minAmountOut : '0'
-
-      const isSwapStep = step.type === BoostedRouteStepType.SWAP
-      this.encodeStep(planner, step, stepAmountIn, stepAmountOut, stepMinOut, stepRecipient, isSwapStep)
-    }
-
-    this.unwrapOutputIfNative(planner, recipient, isOutputNative)
-
-    // Unwind intermediate tokens back to input token and sweep to user
-    this.unwindIntermediateTokens(planner, steps, recipient)
-    this.sweepUnusedInput(planner, route.input.wrapped.address, recipient, isInputNative)
-  }
-
-  // ═══════════════════════════════════════════════════════════════════════════
-  // STEP ENCODER
-  // ═══════════════════════════════════════════════════════════════════════════
-
-  /**
-   * Encode a single step (WRAP, UNWRAP, or SWAP)
-   * @param exactOutput - if true, SWAP uses ExactOutput command; WRAP/UNWRAP always use ExactInput
-   */
-  private encodeStep(
-    planner: RoutePlanner,
-    step: BoostedRouteStep,
-    amountIn: string,
-    amountOut: string,
-    minAmountOut: string,
-    recipient: string,
-    exactOutput: boolean
-  ) {
-    switch (step.type) {
-      case BoostedRouteStepType.WRAP:
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          step.tokenOut.address,
-          step.tokenIn.address,
-          recipient,
-          amountIn,
-          minAmountOut,
-        ])
-        break
-
-      case BoostedRouteStepType.UNWRAP:
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [step.tokenIn.address, recipient, amountIn, minAmountOut])
-        break
-
-      case BoostedRouteStepType.SWAP: {
-        const route = new Route([step.pool], step.tokenIn, step.tokenOut)
-        if (exactOutput) {
-          const path = encodeRouteToPath(route, exactOutput)
-          planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [recipient, amountOut, amountIn, path, SOURCE_ROUTER])
+    // pools must be unique inter protocols
+    const numPools = this.swaps.map(({ route }) => route.pools.length).reduce((total, cur) => total + cur, 0)
+    const poolIdentifierSet = new Set<string>()
+    for (const { route } of this.swaps) {
+      for (const pool of route.pools) {
+        if (pool instanceof IntegralPool) {
+          poolIdentifierSet.add(
+            computeCustomPoolAddress({
+              tokenA: pool.token0,
+              tokenB: pool.token1,
+              customPoolDeployer: pool.deployer,
+            })
+          )
+        } else if (pool instanceof V3Pool) {
+          poolIdentifierSet.add(V3Pool.getAddress(pool.token0, pool.token1, pool.fee))
+        } else if (pool instanceof Pair) {
+          const pair = pool
+          poolIdentifierSet.add(Pair.getAddress(pair.token0, pair.token1))
         } else {
-          const path = encodeRouteToPath(route, exactOutput)
-          planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_IN, [
-            recipient,
-            amountIn,
-            minAmountOut,
-            path,
-            SOURCE_ROUTER,
-          ])
+          throw new Error('Unexpected pool type in route when constructing trade object')
         }
-        break
       }
     }
+    invariant(numPools === poolIdentifierSet.size, 'POOLS_DUPLICATED')
   }
 
-  // ═══════════════════════════════════════════════════════════════════════════
-  // HELPERS
-  // ═══════════════════════════════════════════════════════════════════════════
+  public get inputAmount(): CurrencyAmount<TInput> {
+    if (this._inputAmount) {
+      return this._inputAmount
+    }
 
-  private transferInputToken(planner: RoutePlanner, tokenAddress: string, amount: string, isNative: boolean): void {
-    if (isNative) {
-      planner.addCommand(CommandType.WRAP_ETH, [ADDRESS_THIS, amount])
-    } else {
-      planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [tokenAddress, ROUTER_ADDRESS, amount])
+    const inputAmountCurrency = this.swaps[0].inputAmount.currency
+    const totalInputFromRoutes = this.swaps
+      .map(({ inputAmount: routeInputAmount }) => routeInputAmount)
+      .reduce((total, cur) => total.add(cur), CurrencyAmount.fromRawAmount(inputAmountCurrency, 0))
+
+    this._inputAmount = totalInputFromRoutes
+    return this._inputAmount
+  }
+
+  public get outputAmount(): CurrencyAmount<TOutput> {
+    if (this._outputAmount) {
+      return this._outputAmount
+    }
+
+    const outputCurrency = this.swaps[0].outputAmount.currency
+    const totalOutputFromRoutes = this.swaps
+      .map(({ outputAmount: routeOutputAmount }) => routeOutputAmount)
+      .reduce((total, cur) => total.add(cur), CurrencyAmount.fromRawAmount(outputCurrency, 0))
+
+    this._outputAmount = totalOutputFromRoutes
+    return this._outputAmount
+  }
+
+  /**
+   * Returns the sum of all swaps within the trade
+   * @returns
+   * inputAmount: total input amount
+   * inputAmountNative: total amount of native currency required for ETH input paths
+   *  - 0 if inputAmount is native but no native input paths
+   *  - undefined if inputAmount is not native
+   * outputAmount: total output amount
+   * outputAmountNative: total amount of native currency returned from ETH output paths
+   *  - 0 if outputAmount is native but no native output paths
+   *  - undefined if outputAmount is not native
+   */
+  public get amounts(): {
+    inputAmount: CurrencyAmount<TInput>
+    inputAmountNative: CurrencyAmount<TInput> | undefined
+    outputAmount: CurrencyAmount<TOutput>
+    outputAmountNative: CurrencyAmount<TOutput> | undefined
+  } {
+    // Find native currencies for reduce below
+    const inputNativeCurrency = this.swaps.find(({ inputAmount }) => inputAmount.currency.isNative)?.inputAmount
+      .currency
+    const outputNativeCurrency = this.swaps.find(({ outputAmount }) => outputAmount.currency.isNative)?.outputAmount
+      .currency
+
+    return {
+      inputAmount: this.inputAmount,
+      inputAmountNative: inputNativeCurrency
+        ? this.swaps.reduce((total, swap) => {
+            return swap.route.input.isNative ? total.add(swap.inputAmount) : total
+          }, CurrencyAmount.fromRawAmount(inputNativeCurrency, 0))
+        : undefined,
+      outputAmount: this.outputAmount,
+      outputAmountNative: outputNativeCurrency
+        ? this.swaps.reduce((total, swap) => {
+            return swap.route.output.isNative ? total.add(swap.outputAmount) : total
+          }, CurrencyAmount.fromRawAmount(outputNativeCurrency, 0))
+        : undefined,
     }
   }
 
-  private unwrapOutputIfNative(planner: RoutePlanner, recipient: string, isNative: boolean): void {
-    if (isNative) {
-      planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
-    }
+  public get numberOfInputWraps(): number {
+    // if the trade's input is eth it may require a wrap
+    if (this.inputAmount.currency.isNative) {
+      return this.wethInputRoutes.length
+    } else return 0
   }
 
-  private sweepUnusedInput(planner: RoutePlanner, tokenAddress: string, recipient: string, isNative: boolean): void {
-    if (isNative) {
-      planner.addCommand(CommandType.UNWRAP_WETH, [recipient, 0])
+  public get numberOfInputUnwraps(): number {
+    // if the trade's input is weth, it may require an unwrap
+    if (this.isWrappedNative(this.inputAmount.currency)) {
+      return this.nativeInputRoutes.length
+    } else return 0
+  }
+
+  public get nativeInputRoutes(): IRoute<TInput, TOutput, Pair | V3Pool | IntegralPool>[] {
+    if (this._nativeInputRoutes) {
+      return this._nativeInputRoutes
+    }
+
+    this._nativeInputRoutes = this.routes.filter((route) => route.input.isNative)
+    return this._nativeInputRoutes
+  }
+
+  public get wethInputRoutes(): IRoute<TInput, TOutput, Pair | V3Pool | IntegralPool>[] {
+    if (this._wethInputRoutes) {
+      return this._wethInputRoutes
+    }
+
+    this._wethInputRoutes = this.routes.filter((route) => this.isWrappedNative(route.input))
+    return this._wethInputRoutes
+  }
+
+  private _executionPrice: Price<TInput, TOutput> | undefined
+
+  /**
+   * The price expressed in terms of output amount/input amount.
+   */
+  public get executionPrice(): Price<TInput, TOutput> {
+    return (
+      this._executionPrice ??
+      (this._executionPrice = new Price(
+        this.inputAmount.currency,
+        this.outputAmount.currency,
+        this.inputAmount.quotient,
+        this.outputAmount.quotient
+      ))
+    )
+  }
+
+  //   /**
+  //    * Returns the sell tax of the input token
+  //    */
+  //   public get inputTax(): Percent {
+  //     const inputCurrency = this.inputAmount.currency
+  //     if (inputCurrency.isNative || !inputCurrency.wrapped.sellFeeBps) return ZERO_PERCENT
+
+  //     return new Percent(inputCurrency.wrapped.sellFeeBps.toNumber(), 10000)
+  //   }
+
+  //   /**
+  //    * Returns the buy tax of the output token
+  //    */
+  //   public get outputTax(): Percent {
+  //     const outputCurrency = this.outputAmount.currency
+  //     if (outputCurrency.isNative || !outputCurrency.wrapped.buyFeeBps) return ZERO_PERCENT
+
+  //     return new Percent(outputCurrency.wrapped.buyFeeBps.toNumber(), 10000)
+  //   }
+
+  private isWrappedNative(currency: Currency): boolean {
+    const chainId = currency.chainId
+    return currency.equals(WNATIVE[chainId])
+  }
+
+  /**
+   * The cached result of the price impact computation
+   * @private
+   */
+  private _priceImpact: Percent | undefined
+  /**
+   * Returns the percent difference between the route's mid price and the expected execution price
+   * In order to exclude token taxes from the price impact calculation, the spot price is calculated
+   * using a ratio of values that go into the pools, which are the post-tax input amount and pre-tax output amount.
+   */
+  public get priceImpact(): Percent {
+    if (this._priceImpact) {
+      return this._priceImpact
+    }
+
+    // // returns 0% price impact even though this may be inaccurate as a swap may have occured.
+    // // because we're unable to derive the pre-buy-tax amount, use 0% as a placeholder.
+    // if (this.outputTax.equalTo(ONE_HUNDRED_PERCENT)) return ZERO_PERCENT
+
+    // let spotOutputAmount = CurrencyAmount.fromRawAmount(this.outputAmount.currency, 0)
+    // for (const { route, inputAmount } of this.swaps) {
+    //   const midPrice = route.midPrice
+    //   const postTaxInputAmount = inputAmount.multiply(new Fraction(ONE).subtract(this.inputTax))
+    //   spotOutputAmount = spotOutputAmount.add(midPrice.quote(postTaxInputAmount))
+    // }
+
+    // // if the total output of this trade is 0, then most likely the post-tax input was also 0, and therefore this swap
+    // // does not move the pools' market price
+    // if (spotOutputAmount.equalTo(ZERO)) return ZERO_PERCENT
+
+    // const preTaxOutputAmount = this.outputAmount.divide(new Fraction(ONE).subtract(this.outputTax))
+    // const priceImpact = spotOutputAmount.subtract(preTaxOutputAmount).divide(spotOutputAmount)
+    // this._priceImpact = new Percent(priceImpact.numerator, priceImpact.denominator)
+
+    return new Percent(ZERO)
+  }
+
+  /**
+   * Get the minimum amount that must be received from this trade for the given slippage tolerance
+   * @param slippageTolerance The tolerance of unfavorable slippage from the execution price of this trade
+   * @returns The amount out
+   */
+  public minimumAmountOut(slippageTolerance: Percent, amountOut = this.outputAmount): CurrencyAmount<TOutput> {
+    invariant(!slippageTolerance.lessThan(ZERO), 'SLIPPAGE_TOLERANCE')
+    if (this.tradeType === TradeType.EXACT_OUTPUT) {
+      return amountOut
     } else {
-      planner.addCommand(CommandType.SWEEP, [tokenAddress, recipient, 0])
+      const slippageAdjustedAmountOut = new Fraction(ONE)
+        .add(slippageTolerance)
+        .invert()
+        .multiply(amountOut.quotient).quotient
+      return CurrencyAmount.fromRawAmount(amountOut.currency, slippageAdjustedAmountOut)
     }
   }
 
   /**
-   * Unwind intermediate tokens back to input token after ExactOutput.
-   * For route A → B → C → D with remainders, unwinds C → B → A.
-   * WRAP steps become UNWRAP, UNWRAP steps become WRAP (reversed).
+   * Get the maximum amount in that can be spent via this trade for the given slippage tolerance
+   * @param slippageTolerance The tolerance of unfavorable slippage from the execution price of this trade
+   * @returns The amount in
    */
-  private unwindIntermediateTokens(planner: RoutePlanner, steps: BoostedRouteStep[], _recipient: string): void {
-    // Process steps in reverse, skipping the last step (output)
-    for (let i = steps.length - 2; i >= 0; i--) {
-      const step = steps[i]
+  public maximumAmountIn(slippageTolerance: Percent, amountIn = this.inputAmount): CurrencyAmount<TInput> {
+    invariant(!slippageTolerance.lessThan(ZERO), 'SLIPPAGE_TOLERANCE')
+    if (this.tradeType === TradeType.EXACT_INPUT) {
+      return amountIn
+    } else {
+      const slippageAdjustedAmountIn = new Fraction(ONE).add(slippageTolerance).multiply(amountIn.quotient).quotient
+      return CurrencyAmount.fromRawAmount(amountIn.currency, slippageAdjustedAmountIn)
+    }
+  }
 
-      if (step.type === BoostedRouteStepType.WRAP) {
-        planner.addCommand(CommandType.ERC4626_UNWRAP, [step.tokenOut.address, ADDRESS_THIS, CONTRACT_BALANCE, 0])
-      } else if (step.type === BoostedRouteStepType.UNWRAP) {
-        planner.addCommand(CommandType.ERC4626_WRAP, [
-          step.tokenIn.address,
-          step.tokenOut.address,
-          ADDRESS_THIS,
-          CONTRACT_BALANCE,
-          0,
-        ])
+  /**
+   * Return the execution price after accounting for slippage tolerance
+   * @param slippageTolerance the allowed tolerated slippage
+   * @returns The execution price
+   */
+  public worstExecutionPrice(slippageTolerance: Percent): Price<TInput, TOutput> {
+    return new Price(
+      this.inputAmount.currency,
+      this.outputAmount.currency,
+      this.maximumAmountIn(slippageTolerance).quotient,
+      this.minimumAmountOut(slippageTolerance).quotient
+    )
+  }
+
+  public static async fromRoutes<TInput extends Currency, TOutput extends Currency, TTradeType extends TradeType>(
+    v2Routes: {
+      route: V2RouteSDK<TInput, TOutput>
+      amount: TTradeType extends TradeType.EXACT_INPUT ? UniswapCurrencyAmount<TInput> : UniswapCurrencyAmount<TOutput>
+    }[],
+    v3Routes: {
+      route: V3RouteSDK<TInput, TOutput>
+      amount: TTradeType extends TradeType.EXACT_INPUT ? UniswapCurrencyAmount<TInput> : UniswapCurrencyAmount<TOutput>
+    }[],
+    tradeType: TTradeType,
+    // mixedRoutes?: {
+    //   mixedRoute: MixedRouteSDK<TInput, TOutput>
+    //   amount: TTradeType extends TradeType.EXACT_INPUT ? CurrencyAmount<TInput> : CurrencyAmount<TOutput>
+    // }[],
+    integralRoutes?: {
+      route: IntegralRouteSDK<TInput, TOutput>
+      amount: TTradeType extends TradeType.EXACT_INPUT ? CurrencyAmount<TInput> : CurrencyAmount<TOutput>
+    }[],
+    integralBoostedRoutes?: {
+      route: IntegralBoostedRouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[]
+  ): Promise<OmegaTrade<TInput, TOutput, TTradeType>> {
+    const populatedV2Routes: {
+      route: V2RouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[] = []
+
+    const populatedV3Routes: {
+      route: V3RouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[] = []
+
+    const populatedintegralRoutes: {
+      route: IntegralRouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[] = []
+
+    const populatedIntegralBoostedRoutes: {
+      route: IntegralBoostedRouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[] = []
+
+    // const populatedMixedRoutes: {
+    //   mixedRoute: MixedRouteSDK<TInput, TOutput>
+    //   inputAmount: CurrencyAmount<TInput>
+    //   outputAmount: CurrencyAmount<TOutput>
+    // }[] = []
+
+    for (const { route: routev2, amount } of v2Routes) {
+      const v2Amount = UniswapCurrencyAmount.fromRawAmount(amount.currency, amount.quotient.toString()) as any
+      const v2Trade = new V2TradeSDK(routev2, v2Amount, tradeType)
+
+      const inputAmount = CurrencyAmount.fromRawAmount(
+        v2Trade.inputAmount.currency,
+        v2Trade.inputAmount.quotient.toString()
+      )
+      const outputAmount = CurrencyAmount.fromRawAmount(
+        v2Trade.outputAmount.currency,
+        v2Trade.outputAmount.quotient.toString()
+      )
+
+      populatedV2Routes.push({
+        route: routev2,
+        inputAmount: inputAmount as CurrencyAmount<TInput>,
+        outputAmount: outputAmount as CurrencyAmount<TOutput>,
+      })
+    }
+
+    for (const { route: routev3, amount } of v3Routes) {
+      const v3Amount = UniswapCurrencyAmount.fromRawAmount(amount.currency, amount.quotient.toString()) as any
+      const v3Trade = await V3TradeSDK.fromRoute(routev3, v3Amount, tradeType)
+
+      const inputAmount = CurrencyAmount.fromRawAmount(
+        v3Trade.inputAmount.currency,
+        v3Trade.inputAmount.quotient.toString()
+      )
+      const outputAmount = CurrencyAmount.fromRawAmount(
+        v3Trade.outputAmount.currency,
+        v3Trade.outputAmount.quotient.toString()
+      )
+
+      populatedV3Routes.push({
+        route: routev3,
+        inputAmount: inputAmount as CurrencyAmount<TInput>,
+        outputAmount: outputAmount as CurrencyAmount<TOutput>,
+      })
+    }
+
+    if (integralRoutes) {
+      for (const { route: routeIntegral, amount } of integralRoutes) {
+        const v4Trade = await IntegralTradeSDK.fromRoute(routeIntegral, amount, tradeType)
+        const { inputAmount, outputAmount } = v4Trade
+
+        populatedintegralRoutes.push({
+          route: routeIntegral,
+          inputAmount,
+          outputAmount,
+        })
       }
     }
+
+    // For boosted routes, amounts are pre-computed (no async calculation needed)
+    if (integralBoostedRoutes) {
+      for (const { route: routeIntegralBoosted, inputAmount, outputAmount } of integralBoostedRoutes) {
+        populatedIntegralBoostedRoutes.push({
+          route: routeIntegralBoosted,
+          inputAmount,
+          outputAmount,
+        })
+      }
+    }
+
+    // if (mixedRoutes) {
+    //   for (const { mixedRoute, amount } of mixedRoutes) {
+    //     const mixedRouteTrade = await MixedRouteTradeSDK.fromRoute(mixedRoute, amount, tradeType)
+    //     const { inputAmount, outputAmount } = mixedRouteTrade
+
+    //     populatedMixedRoutes.push({
+    //       mixedRoute,
+    //       inputAmount,
+    //       outputAmount,
+    //     })
+    //   }
+    // }
+
+    return new OmegaTrade({
+      v2Routes: populatedV2Routes,
+      v3Routes: populatedV3Routes,
+      integralRoutes: populatedintegralRoutes,
+      integralBoostedRoutes: populatedIntegralBoostedRoutes,
+      //   mixedRoutes: populatedMixedRoutes,
+      tradeType,
+    })
+  }
+
+  public static async fromRoute<TInput extends Currency, TOutput extends Currency, TTradeType extends TradeType>(
+    route:
+      | V2RouteSDK<TInput, TOutput>
+      | V3RouteSDK<TInput, TOutput>
+      | IntegralRouteSDK<TInput, TOutput>
+      | IntegralBoostedRouteSDK<TInput, TOutput>,
+    //   | MixedRouteSDK<TInput, TOutput>,
+    amount: TTradeType extends TradeType.EXACT_INPUT ? CurrencyAmount<TInput> : CurrencyAmount<TOutput>,
+    tradeType: TTradeType,
+    /** For BoostedRoute only: pre-computed output amount (required for boosted routes) */
+    outputAmountForBoosted?: CurrencyAmount<TOutput>
+  ): Promise<OmegaTrade<TInput, TOutput, TTradeType>> {
+    let v2Routes: {
+      route: V2RouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[] = []
+
+    let v3Routes: {
+      route: V3RouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[] = []
+
+    let integralRoutes: {
+      route: IntegralRouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[] = []
+
+    let integralBoostedRoutes: {
+      route: IntegralBoostedRouteSDK<TInput, TOutput>
+      inputAmount: CurrencyAmount<TInput>
+      outputAmount: CurrencyAmount<TOutput>
+    }[] = []
+
+    // let mixedRoutes: {
+    //   mixedRoute: MixedRouteSDK<TInput, TOutput>
+    //   inputAmount: CurrencyAmount<TInput>
+    //   outputAmount: CurrencyAmount<TOutput>
+    // }[] = []
+
+    if (route instanceof V2RouteSDK) {
+      const amountAsUniswapAmount = UniswapCurrencyAmount.fromRawAmount(
+        amount.currency,
+        amount.quotient.toString()
+      ) as any
+      const v2Trade = new V2TradeSDK(route, amountAsUniswapAmount, tradeType)
+      const inputAmount = CurrencyAmount.fromRawAmount(
+        v2Trade.inputAmount.currency,
+        v2Trade.inputAmount.quotient.toString()
+      )
+      const outputAmount = CurrencyAmount.fromRawAmount(
+        v2Trade.outputAmount.currency,
+        v2Trade.outputAmount.quotient.toString()
+      )
+      v2Routes = [
+        {
+          route,
+          inputAmount: inputAmount as CurrencyAmount<TInput>,
+          outputAmount: outputAmount as CurrencyAmount<TOutput>,
+        },
+      ]
+    } else if (route instanceof V3RouteSDK) {
+      const amountAsUniswapAmount = UniswapCurrencyAmount.fromRawAmount(
+        amount.currency,
+        amount.quotient.toString()
+      ) as any
+      const v3Trade = await V3TradeSDK.fromRoute(route, amountAsUniswapAmount, tradeType)
+      const inputAmount = CurrencyAmount.fromRawAmount(
+        v3Trade.inputAmount.currency,
+        v3Trade.inputAmount.quotient.toString()
+      )
+      const outputAmount = CurrencyAmount.fromRawAmount(
+        v3Trade.outputAmount.currency,
+        v3Trade.outputAmount.quotient.toString()
+      )
+      v3Routes = [
+        {
+          route,
+          inputAmount: inputAmount as CurrencyAmount<TInput>,
+          outputAmount: outputAmount as CurrencyAmount<TOutput>,
+        },
+      ]
+    } else if (route instanceof IntegralRouteSDK) {
+      const integralTrade = await IntegralTradeSDK.fromRoute(route, amount as any, tradeType)
+      const { inputAmount, outputAmount } = integralTrade
+      integralRoutes = [{ route, inputAmount, outputAmount }]
+    } else if (route instanceof IntegralBoostedRouteSDK) {
+      if (!outputAmountForBoosted) {
+        throw new Error('BoostedRoute requires outputAmountForBoosted parameter')
+      }
+      const inputAmount =
+        tradeType === TradeType.EXACT_INPUT
+          ? (amount as CurrencyAmount<TInput>)
+          : (outputAmountForBoosted as unknown as CurrencyAmount<TInput>)
+      const outputAmount =
+        tradeType === TradeType.EXACT_INPUT ? outputAmountForBoosted : (amount as unknown as CurrencyAmount<TOutput>)
+      integralBoostedRoutes = [
+        {
+          route,
+          inputAmount: inputAmount as CurrencyAmount<TInput>,
+          outputAmount: outputAmount as CurrencyAmount<TOutput>,
+        },
+      ]
+      // } else if (route instanceof MixedRouteSDK) {
+      //   const mixedRouteTrade = await MixedRouteTradeSDK.fromRoute(route, amount, tradeType)
+      //   const { inputAmount, outputAmount } = mixedRouteTrade
+      //   mixedRoutes = [{ mixedRoute: route, inputAmount, outputAmount }]
+    } else {
+      throw new Error('Invalid route type')
+    }
+
+    return new OmegaTrade({
+      v2Routes,
+      v3Routes,
+      integralRoutes,
+      integralBoostedRoutes,
+      //   mixedRoutes,
+      tradeType,
+    })
   }
 }

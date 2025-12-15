@@ -2,7 +2,6 @@ import invariant from 'tiny-invariant'
 import {
   Currency,
   MethodParameters,
-  Trade,
   TradeType,
   Position,
   Percent,
@@ -12,85 +11,60 @@ import {
   AnyToken,
 } from '@cryptoalgebra/integral-sdk'
 import { Interface } from '@ethersproject/abi'
-import { BigNumber, BigNumberish } from 'ethers'
+import { BigNumber } from 'ethers'
 import { CommandType, RoutePlanner } from './utils/routerCommands'
-import { encodePermit, Permit2Permit } from './utils/inputTokens'
-import { Address } from 'viem'
 import { omegaRouterAbi } from './abis'
-import { ADDRESS_THIS, CONTRACT_BALANCE, ROUTER_ADDRESS } from './constants'
+import { ADDRESS_THIS, CONTRACT_BALANCE } from './constants'
 import {
   encodeERC721Permit,
   encodeDecreaseLiquidity,
   encodeCollect,
   encodeBurn,
-  NFTPermitSignature,
+  encodePermit,
 } from './utils/encodeCall'
-import { OmegaTrade, SwapOptions } from './entities'
+import { OmegaTrade } from './entities/OmegaTrade'
+import { OmegaEncoder } from './entities/OmegaEncoder'
+import {
+  OmegaSwapOptions,
+  OmegaCollectOptions,
+  OmegaMintOptions,
+  OmegaRemoveLiquidityOptions,
+  OmegaRouterConfig,
+} from './types/options'
+import { Address } from 'viem'
 
-export type OmegaRouterConfig = {
-  sender?: string // address
-  deadline?: BigNumberish
-}
-
-export interface OmegaMintOptions {
-  recipient: Address // Required for both mint and increase (for refunds)
-  slippageTolerance: Percent
-  deadline: BigNumberish
-  useNative?: boolean
-  deployer?: Address
-  token0Permit: Permit2Permit | null
-  token1Permit: Permit2Permit | null
-  // Underlying amounts to wrap. If provided, will wrap underlying → boosted before mint
-  amount0Underlying?: CurrencyAmount<Currency>
-  amount1Underlying?: CurrencyAmount<Currency>
-  // If tokenId is provided, will increase liquidity instead of minting new position
-  tokenId?: BigNumberish
-}
-
-export interface OmegaRemoveLiquidityOptions {
-  tokenId: BigNumberish
-  liquidityPercentage: Percent
-  slippageTolerance: Percent
-  deadline: BigNumberish
-  burnToken?: boolean
-  permit: NFTPermitSignature
-  recipient: Address // Where to send the removed liquidity
-  token0Unwrap?: boolean // unwrap token0 boosted → underlying
-  token1Unwrap?: boolean // unwrap token1 boosted → underlying
-}
-
-export interface OmegaCollectOptions {
-  tokenId: BigNumberish
-  recipient: Address
-  permit: NFTPermitSignature
-  token0Unwrap?: boolean // unwrap token0 boosted → underlying
-  token1Unwrap?: boolean // unwrap token1 boosted → underlying
-}
-
-export abstract class OmegaRouter {
+export class OmegaRouter {
   public static INTERFACE: Interface = new Interface(omegaRouterAbi)
 
-  public static async swapCallParameters(
-    trade: Trade<Currency, Currency, TradeType>,
-    options: SwapOptions
-  ): Promise<MethodParameters> {
+  private readonly routerAddress: Address
+
+  constructor(routerAddress: Address) {
+    this.routerAddress = routerAddress
+  }
+
+  public swapCallParameters(
+    trade: OmegaTrade<Currency, Currency, TradeType>,
+    options: OmegaSwapOptions
+  ): MethodParameters {
     const planner = new RoutePlanner()
 
-    const omegaTrade: OmegaTrade = new OmegaTrade(trade, options)
+    const omegaEncoder: OmegaEncoder = new OmegaEncoder(trade, options)
 
-    const inputCurrency = omegaTrade.trade.inputAmount.currency
+    const inputCurrency = omegaEncoder.trade.inputAmount.currency
     invariant(!(inputCurrency.isNative && !!options.inputTokenPermit), 'NATIVE_INPUT_PERMIT')
+    // invariant(!inputCurrency.isNative || !!options.inputTokenPermit, 'MISSING_INPUT_PERMIT')
 
     if (options.inputTokenPermit) {
-      encodePermit(planner, options.inputTokenPermit)
+      const signature = encodePermit(options.inputTokenPermit)
+      planner.addCommand(CommandType.PERMIT2_PERMIT, [options.inputTokenPermit, signature])
     }
 
     const nativeCurrencyValue = inputCurrency.isNative
-      ? BigNumber.from(omegaTrade.trade.maximumAmountIn(options.slippageTolerance).quotient.toString())
+      ? BigNumber.from(omegaEncoder.trade.maximumAmountIn(options.slippageTolerance).quotient.toString())
       : BigNumber.from(0)
 
-    await omegaTrade.encode(planner)
-    return OmegaRouter.encodePlan(planner, nativeCurrencyValue, {
+    omegaEncoder.encode(planner)
+    return this.encodePlan(planner, nativeCurrencyValue, {
       deadline: options.deadline ? BigNumber.from(options.deadline) : undefined,
     })
   }
@@ -101,7 +75,7 @@ export abstract class OmegaRouter {
    * @param position The position to mint or increase
    * @param options Options for the transaction
    */
-  public static addCallParameters(position: Position, options: OmegaMintOptions): MethodParameters {
+  public addCallParameters(position: Position, options: OmegaMintOptions): MethodParameters {
     const planner = new RoutePlanner()
 
     const {
@@ -149,10 +123,12 @@ export abstract class OmegaRouter {
     const amount1Str = amount1ToTransfer.quotient.toString()
 
     if (token0Permit && !isToken0Native && amount0Str !== '0') {
-      encodePermit(planner, token0Permit)
+      const signature = encodePermit(token0Permit)
+      planner.addCommand(CommandType.PERMIT2_PERMIT, [token0Permit, signature])
     }
     if (token1Permit && !isToken1Native && amount1Str !== '0') {
-      encodePermit(planner, token1Permit)
+      const signature = encodePermit(token1Permit)
+      planner.addCommand(CommandType.PERMIT2_PERMIT, [token1Permit, signature])
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -165,7 +141,7 @@ export abstract class OmegaRouter {
       } else {
         planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
           amount0ToTransfer.currency.wrapped.address,
-          ROUTER_ADDRESS,
+          this.routerAddress,
           amount0Str,
         ])
       }
@@ -177,7 +153,7 @@ export abstract class OmegaRouter {
       } else {
         planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
           amount1ToTransfer.currency.wrapped.address,
-          ROUTER_ADDRESS,
+          this.routerAddress,
           amount1Str,
         ])
       }
@@ -294,7 +270,7 @@ export abstract class OmegaRouter {
       planner.addCommand(CommandType.SWEEP, [token1.wrapped.address, recipient, 0])
     }
 
-    return OmegaRouter.encodePlan(planner, nativeValue, { deadline })
+    return this.encodePlan(planner, nativeValue, { deadline })
   }
 
   /**
@@ -303,7 +279,7 @@ export abstract class OmegaRouter {
    * @param position The position to remove liquidity from
    * @param options Options for the transaction
    */
-  public static removeCallParameters(position: Position, options: OmegaRemoveLiquidityOptions): MethodParameters {
+  public removeCallParameters(position: Position, options: OmegaRemoveLiquidityOptions): MethodParameters {
     const planner = new RoutePlanner()
 
     const {
@@ -344,7 +320,7 @@ export abstract class OmegaRouter {
     // STEP 2: ERC721 Permit
     // ═══════════════════════════════════════════════════════════
     const encodedPermit = encodeERC721Permit({
-      spender: ROUTER_ADDRESS,
+      spender: this.routerAddress,
       tokenId: BigNumber.from(tokenId),
       deadline: permit.deadline.toString(),
       v: permit.v,
@@ -368,10 +344,10 @@ export abstract class OmegaRouter {
     // ═══════════════════════════════════════════════════════════
     // STEP 4: Collect tokens to router
     // ═══════════════════════════════════════════════════════════
-    // IMPORTANT: recipient must be ROUTER_ADDRESS for tokens to be available for unwrap/sweep
+    // IMPORTANT: recipient must be router address for tokens to be available for unwrap/sweep
     const encodedCollectCall = encodeCollect({
       tokenId: BigNumber.from(tokenId),
-      recipient: ROUTER_ADDRESS,
+      recipient: this.routerAddress,
       amount0Max: MaxUint128,
       amount1Max: MaxUint128,
     })
@@ -424,7 +400,7 @@ export abstract class OmegaRouter {
       planner.addCommand(CommandType.INTEGRAL_POSITION_MANAGER_CALL, [encodedBurnCall])
     }
 
-    return OmegaRouter.encodePlan(planner, BigNumber.from(0), { deadline })
+    return this.encodePlan(planner, BigNumber.from(0), { deadline })
   }
 
   /**
@@ -434,11 +410,7 @@ export abstract class OmegaRouter {
    * @param token1 The token1 in the pool
    * @param options Options for collecting fees
    */
-  public static collectCallParameters(
-    token0: AnyToken,
-    token1: AnyToken,
-    options: OmegaCollectOptions
-  ): MethodParameters {
+  public collectCallParameters(token0: AnyToken, token1: AnyToken, options: OmegaCollectOptions): MethodParameters {
     const planner = new RoutePlanner()
 
     const { tokenId, recipient, permit, token0Unwrap, token1Unwrap } = options
@@ -451,7 +423,7 @@ export abstract class OmegaRouter {
     // ═══════════════════════════════════════════════════════════
     if (permit) {
       const encodedPermit = encodeERC721Permit({
-        spender: ROUTER_ADDRESS,
+        spender: this.routerAddress,
         tokenId: BigNumber.from(tokenId),
         deadline: permit.deadline.toString(),
         v: permit.v,
@@ -468,7 +440,7 @@ export abstract class OmegaRouter {
     const maxUint128 = BigNumber.from(2).pow(128).sub(1).toString()
     const encodedCollectCall = encodeCollect({
       tokenId: BigNumber.from(tokenId),
-      recipient: ROUTER_ADDRESS,
+      recipient: this.routerAddress,
       amount0Max: maxUint128,
       amount1Max: maxUint128,
     })
@@ -513,7 +485,7 @@ export abstract class OmegaRouter {
       planner.addCommand(CommandType.SWEEP, [token1.address, recipient, 0])
     }
 
-    return OmegaRouter.encodePlan(planner, BigNumber.from(0))
+    return this.encodePlan(planner, BigNumber.from(0))
   }
 
   /**
@@ -522,7 +494,7 @@ export abstract class OmegaRouter {
    * @param nativeCurrencyValue the native currency value of the planned route
    * @param config the router config
    */
-  private static encodePlan(
+  private encodePlan(
     planner: RoutePlanner,
     nativeCurrencyValue: BigNumber,
     config: OmegaRouterConfig = {}
