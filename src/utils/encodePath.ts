@@ -120,7 +120,7 @@ export function encodeSimpleBoostedPathExactOutput(tokens: string[], deployer: s
 /**
  * Build boosted path for ExactOutput from BoostedRoute steps.
  * Converts steps to BoostedPoolHop format and encodes the path.
- */
+ **/
 export function encodeBoostedRouteExactOutput(route: BoostedRoute<Currency, Currency>): string {
   const { steps } = route
   const hops: BoostedPoolHop[] = []
@@ -137,6 +137,7 @@ export function encodeBoostedRouteExactOutput(route: BoostedRoute<Currency, Curr
   for (let s = swapIndices.length - 1; s >= 0; s--) {
     const swapIdx = swapIndices[s]
     const swapStep = steps[swapIdx] as BoostedRouteStepSwap
+    const isLastSwapInExecution = s === swapIndices.length - 1 // last swap in execution order
 
     let wrapIn: WrapActionType = WrapAction.NONE
     let wrapOut: WrapActionType = WrapAction.NONE
@@ -144,25 +145,28 @@ export function encodeBoostedRouteExactOutput(route: BoostedRoute<Currency, Curr
     let tokenOut: string = swapStep.tokenOut.address
 
     const stepBefore = swapIdx > 0 ? steps[swapIdx - 1] : null
-
     const stepAfter = swapIdx < steps.length - 1 ? steps[swapIdx + 1] : null
 
-    // Check step after swap for output wrap action
-    if (stepAfter?.type === BoostedRouteStepType.UNWRAP) {
-      wrapOut = WrapAction.UNWRAP
-      tokenOut = stepAfter.tokenOut.address // underlying token
-    } else if (stepAfter?.type === BoostedRouteStepType.WRAP) {
-      wrapOut = WrapAction.WRAP
-      tokenOut = stepAfter.tokenOut.address // wrapped/boosted token
+    if (stepAfter?.type === BoostedRouteStepType.UNWRAP || stepAfter?.type === BoostedRouteStepType.WRAP) {
+      if (isLastSwapInExecution) {
+        // This swap's output goes through wrap/unwrap to the final output
+        if (stepAfter.type === BoostedRouteStepType.UNWRAP) {
+          wrapOut = WrapAction.UNWRAP
+          tokenOut = stepAfter.tokenOut.address // underlying token
+        } else {
+          wrapOut = WrapAction.WRAP
+          tokenOut = stepAfter.tokenOut.address // wrapped/boosted token
+        }
+      }
     }
 
-    // Check step before swap for input wrap action
+    // Apply wrapIn if stepBefore is a wrap/unwrap operation
     if (stepBefore?.type === BoostedRouteStepType.WRAP) {
       wrapIn = WrapAction.WRAP
-      tokenIn = stepBefore.tokenIn.address // underlying token
+      tokenIn = stepBefore.tokenIn.address // underlying token that user provides
     } else if (stepBefore?.type === BoostedRouteStepType.UNWRAP) {
       wrapIn = WrapAction.UNWRAP
-      tokenIn = stepBefore.tokenIn.address // wrapped/boosted token
+      tokenIn = stepBefore.tokenIn.address // wrapped token that comes from previous swap or user
     }
 
     // Pool tokens are what the pool actually trades
