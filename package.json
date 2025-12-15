@@ -31,7 +31,7 @@
   },
   "scripts": {
     "build": "tsup",
-    "publish": "yarn build && npm publish",
+    "prepare": "yarn build",
     "lint": "yarn prettier",
     "lint:fix": "yarn prettier:fix && yarn forge:fix",
     "prettier": "prettier --check '**/*.ts' && prettier --check '**/*.json'",
