@@ -31,6 +31,7 @@
   },
   "scripts": {
     "build": "tsup",
+    "publish": "yarn build && npm publish",
     "lint": "yarn prettier",
     "lint:fix": "yarn prettier:fix && yarn forge:fix",
     "prettier": "prettier --check '**/*.ts' && prettier --check '**/*.json'",
@@ -66,5 +67,5 @@
     "hoistingLimits": "workspaces"
   },
   "sideEffects": false,
-  "version": "0.2.4"
+  "version": "0.2.5"
 }
