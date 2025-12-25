@@ -32,6 +32,7 @@
   "scripts": {
     "build": "tsup",
     "prepare": "yarn build",
+    "test": "NODE_OPTIONS='--loader ts-node/esm' yarn mocha 'test/**/*.test.ts' --timeout 10000",
     "lint": "yarn prettier",
     "lint:fix": "yarn prettier:fix && yarn forge:fix",
     "prettier": "prettier --check '**/*.ts' && prettier --check '**/*.json'",
@@ -46,7 +47,12 @@
     "viem": "^2.31.3"
   },
   "devDependencies": {
+    "@types/chai": "^4.3.0",
+    "@types/mocha": "^10.0.0",
     "@types/node": "^20.7.0",
+    "chai": "^4.3.7",
+    "jsbi": "^3.2.5",
+    "mocha": "^10.2.0",
     "prettier": "^2.4.1",
     "ts-node": "^10.9.2",
     "tslib": "^2.8.1",

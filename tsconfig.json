@@ -11,7 +11,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "lib": ["esnext.string"],
-    "types": ["node"]
+    "types": ["node", "mocha"]
   },
   "include": ["src", "test"]
 }
