@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://algebra.finance/"><img alt="Algebra" src="logo.svg" width="360"></a>
+  <a href="https://algebra.finance/"><img alt="Algebra" src="https://raw.githubusercontent.com/cryptoalgebra/Algebra/a501e2c758f0b406b60f8d9a5501f8a1f9542e57/logo.svg" width="360"></a>
 </p>
 
 <p align="center">
