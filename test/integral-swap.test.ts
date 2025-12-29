@@ -147,7 +147,7 @@ describe('Integral Swap Tests', () => {
       })
 
       const recipient = '0x4444444444444444444444444444444444444444'
-      const deadline = Math.floor(Date.now() / 1000) + 1800 // 30 minutes
+      const deadline = Math.floor(Date.now() / 1000) + 1800 
 
       const { calldata, value } = router.swapCallParameters(trade, {
         slippageTolerance: new Percent(50, 10_000), // 0.5%
@@ -340,7 +340,7 @@ describe('Integral Swap Tests', () => {
       
       // Проверяем путь из 4 токенов
       const routePath = trade.routes[0].path
-      expect(routePath.length).to.equal(4, 'Path should have 4 tokens: wU->wB->B->A')  // Изменить с 3 на 4
+      expect(routePath.length).to.equal(4, 'Path should have 4 tokens: wU->wB->B->A')  
       expect(routePath[0].equals(wU)).to.be.true
       expect(routePath[1].equals(wB)).to.be.true
       expect(routePath[2].equals(tokenB)).to.be.true  
