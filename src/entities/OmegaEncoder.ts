@@ -65,7 +65,6 @@ export class OmegaEncoder implements Command {
     if (this.inputRequiresWrap) {
       const wrapAmount = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
       planner.addCommand(CommandType.WRAP_ETH, [ROUTER_AS_RECIPIENT, wrapAmount])
-      console.log(`[WRAP_ETH]: { recipient: ${ROUTER_AS_RECIPIENT}, amount: ${wrapAmount} }`)
     } else {
       const transferAmount = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
       planner.addCommand(CommandType.PERMIT2_TRANSFER_FROM, [
@@ -73,9 +72,6 @@ export class OmegaEncoder implements Command {
         ROUTER_AS_RECIPIENT,
         transferAmount,
       ])
-      console.log(
-        `[PERMIT2_TRANSFER_FROM]: { token: ${this.trade.inputAmount.currency.wrapped.address}, recipient: ${ROUTER_AS_RECIPIENT}, amount: ${transferAmount} }`
-      )
     }
 
     // Set default recipient
@@ -116,15 +112,11 @@ export class OmegaEncoder implements Command {
       if (this.outputRequiresUnwrap) {
         const minimumAmountOut = this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString()
         planner.addCommand(CommandType.UNWRAP_WETH, [this.options.recipient, minimumAmountOut])
-        console.log(`[UNWRAP_WETH]: { recipient: ${this.options.recipient}, minAmountOut: ${minimumAmountOut} }`)
       } else if (performAggregatedSlippageCheck) {
         // Sweep output token to recipient with slippage check
         const minimumAmountOut = this.trade.minimumAmountOut(this.options.slippageTolerance).quotient.toString()
         const tokenAddress = this.trade.outputAmount.currency.wrapped.address
         planner.addCommand(CommandType.SWEEP, [tokenAddress, this.options.recipient, minimumAmountOut])
-        console.log(
-          `[SWEEP]: { token: ${tokenAddress}, recipient: ${this.options.recipient}, minAmount: ${minimumAmountOut} }`
-        )
       }
     }
 
@@ -133,12 +125,10 @@ export class OmegaEncoder implements Command {
       if (this.inputRequiresWrap) {
         // Unwrap unused WETH back to ETH and send to user
         planner.addCommand(CommandType.UNWRAP_WETH, [this.options.recipient, 0])
-        console.log(`[UNWRAP_WETH]: { recipient: ${this.options.recipient}, minAmountOut: 0 }`)
       } else {
         // Sweep unused input tokens back to user
         const tokenAddress = this.trade.inputAmount.currency.wrapped.address
         planner.addCommand(CommandType.SWEEP, [tokenAddress, this.options.recipient, 0])
-        console.log(`[SWEEP]: { token: ${tokenAddress}, recipient: ${this.options.recipient}, minAmount: 0 }`)
       }
     }
   }
@@ -167,11 +157,6 @@ export class OmegaEncoder implements Command {
         path,
         SOURCE_ROUTER,
       ])
-      console.log(
-        `[V2_SWAP_EXACT_IN]: { recipient: ${recipient}, inputAmount: ${inputAmount.quotient.toString()}, minAmountOut: ${minAmountOut}, path: ${path.join(
-          ' -> '
-        )}, payerIsUser: ${SOURCE_ROUTER} }`
-      )
     } else {
       const recipient = routerMustCustody ? ROUTER_AS_RECIPIENT : this.options.recipient
       const maxAmountIn = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
@@ -183,11 +168,6 @@ export class OmegaEncoder implements Command {
         path,
         SOURCE_ROUTER,
       ])
-      console.log(
-        `[V2_SWAP_EXACT_OUT]: { recipient: ${recipient}, outputAmount: ${outputAmount.quotient.toString()}, maxAmountIn: ${maxAmountIn}, path: ${path.join(
-          ' -> '
-        )}, payerIsUser: ${SOURCE_ROUTER} }`
-      )
     }
   }
 
@@ -215,9 +195,6 @@ export class OmegaEncoder implements Command {
         path,
         SOURCE_ROUTER,
       ])
-      console.log(
-        `[UNISWAP_V3_SWAP_EXACT_IN]: { recipient: ${recipient}, inputAmount: ${inputAmount.quotient.toString()}, minAmountOut: ${minAmountOut}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
-      )
     } else {
       const recipient = routerMustCustody ? ROUTER_AS_RECIPIENT : this.options.recipient
       const maxAmountIn = this.trade.maximumAmountIn(this.options.slippageTolerance).quotient.toString()
@@ -228,9 +205,6 @@ export class OmegaEncoder implements Command {
         path,
         SOURCE_ROUTER,
       ])
-      console.log(
-        `[UNISWAP_V3_SWAP_EXACT_OUT]: { recipient: ${recipient}, outputAmount: ${outputAmount.quotient.toString()}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
-      )
     }
   }
 
@@ -258,9 +232,6 @@ export class OmegaEncoder implements Command {
         path,
         SOURCE_ROUTER,
       ])
-      console.log(
-        `[INTEGRAL_SWAP_EXACT_IN]: { recipient: ${recipient}, inputAmount: ${inputAmount.quotient.toString()}, minAmountOut: ${minAmountOut}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
-      )
     } else {
       const path = encodeIntegralExactOut(integralRoute)
       const recipient = routerMustCustody ? ROUTER_AS_RECIPIENT : this.options.recipient
@@ -272,9 +243,6 @@ export class OmegaEncoder implements Command {
         path,
         SOURCE_ROUTER,
       ])
-      console.log(
-        `[INTEGRAL_SWAP_EXACT_OUT]: { recipient: ${recipient}, outputAmount: ${outputAmount.quotient.toString()}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
-      )
     }
   }
 
@@ -336,9 +304,6 @@ export class OmegaEncoder implements Command {
             stepAmount,
             stepMinAmountOut,
           ])
-          console.log(
-            `[ERC4626_WRAP]: { vault: ${step.tokenOut.address}, underlying: ${step.tokenIn.address}, recipient: ${stepRecipient}, amountIn: ${stepAmount}, minAmountOut: ${stepMinAmountOut} }`
-          )
           break
 
         case BoostedRouteStepType.UNWRAP:
@@ -348,9 +313,6 @@ export class OmegaEncoder implements Command {
             stepAmount,
             stepMinAmountOut,
           ])
-          console.log(
-            `[ERC4626_UNWRAP]: { vault: ${step.tokenIn.address}, recipient: ${stepRecipient}, amountIn: ${stepAmount}, minAmountOut: ${stepMinAmountOut} }`
-          )
           break
 
         case BoostedRouteStepType.SWAP: {
@@ -363,9 +325,6 @@ export class OmegaEncoder implements Command {
             path,
             SOURCE_ROUTER,
           ])
-          console.log(
-            `[INTEGRAL_SWAP_EXACT_IN]: { recipient: ${stepRecipient}, inputAmount: ${stepAmount}, minAmountOut: ${stepMinAmountOut}, path: ${path}, payerIsUser: false }`
-          )
           break
         }
       }
@@ -374,7 +333,6 @@ export class OmegaEncoder implements Command {
     // Unwrap output to native if needed (only if router doesn't need to custody)
     if (shouldUnwrapOutput) {
       planner.addCommand(CommandType.UNWRAP_WETH, [this.options.recipient, 0])
-      console.log(`[UNWRAP_WETH]: { recipient: ${this.options.recipient}, minAmountOut: 0 }`)
     }
   }
 
@@ -397,8 +355,5 @@ export class OmegaEncoder implements Command {
 
     // Single command handles all wrap/unwrap/swap operations
     planner.addCommand(CommandType.INTEGRAL_SWAP_EXACT_OUT, [recipient, amountOut, maxAmountIn, path, SOURCE_ROUTER])
-    console.log(
-      `[INTEGRAL_SWAP_EXACT_OUT]: { recipient: ${recipient}, amountOut: ${amountOut}, maxAmountIn: ${maxAmountIn}, path: ${path}, payerIsUser: ${SOURCE_ROUTER} }`
-    )
   }
 }

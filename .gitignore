@@ -6,6 +6,6 @@ docs
 cache
 out
 .env
-integration-tests
 .yalc
 yalc.lock
+typechain
