@@ -7,7 +7,7 @@ const { ethers } = hre
 
 export async function resetFork(blockNumber?: number, jsonRpcUrl?: string) {
   const url = jsonRpcUrl ?? `https://rpc.ankr.com/base/${process.env.ANKR_API_KEY}`
-  const block = blockNumber ?? 40120776
+  const block = blockNumber ?? 41067903
 
   await hre.network.provider.request({
     method: 'hardhat_reset',

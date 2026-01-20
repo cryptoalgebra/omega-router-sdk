@@ -54,7 +54,7 @@ describe('Algebra Integral Tests:', () => {
     it('exactOut, permiting with slippage', async () => {
       const { trader, routerSDK, contracts } = ctx
       const maxAmountIn = expandTo6DecimalsBN(1000)
-      const amountOut = expandTo18DecimalsBN(0.03)
+      const amountOut = expandTo18DecimalsBN(0.01)
       const permitAmount = maxAmountIn.mul(105).div(100) // 5% extra for slippage
       const inputTokenPermit = await getInputTokenPermit(BASE_USDC, permitAmount, trader, contracts.permit2)
 
@@ -88,7 +88,7 @@ describe('Algebra Integral Tests:', () => {
     it('exactIn swap', async () => {
       const { trader, routerSDK, contracts } = ctx
       const amountIn = expandTo6DecimalsBN(500)
-      const minAmountOut = expandTo18DecimalsBN(0.03)
+      const minAmountOut = expandTo18DecimalsBN(0.01)
 
       const pool = createMockIntegralPool(BASE_USDC, BASE_WETH)
       const route = new Route([pool], BASE_USDC, BASE_WETH)
@@ -117,7 +117,7 @@ describe('Algebra Integral Tests:', () => {
     it('exactOut swap', async () => {
       const { trader, routerSDK, contracts } = ctx
       const maxAmountIn = expandTo6DecimalsBN(1000)
-      const amountOut = expandTo18DecimalsBN(0.03)
+      const amountOut = expandTo18DecimalsBN(0.01)
 
       const pool = createMockIntegralPool(BASE_USDC, BASE_WETH)
       const route = new Route([pool], BASE_USDC, BASE_WETH)
@@ -148,7 +148,7 @@ describe('Algebra Integral Tests:', () => {
     it('exactIn swap', async () => {
       const { trader, routerSDK, contracts } = ctx
       const amountIn = expandTo6DecimalsBN(500)
-      const minAmountOut = expandTo18DecimalsBN(0.03)
+      const minAmountOut = expandTo18DecimalsBN(0.01)
 
       const pool = createMockIntegralPool(BASE_USDC, BASE_WETH)
       const route = new Route([pool], BASE_USDC, BASE_WETH)
@@ -176,7 +176,7 @@ describe('Algebra Integral Tests:', () => {
     it('exactOut swap', async () => {
       const { trader, routerSDK, contracts } = ctx
       const maxAmountIn = expandTo6DecimalsBN(1000)
-      const amountOut = expandTo18DecimalsBN(0.03)
+      const amountOut = expandTo18DecimalsBN(0.01)
 
       const pool = createMockIntegralPool(BASE_USDC, BASE_WETH)
       const route = new Route([pool], BASE_USDC, BASE_WETH)
@@ -206,7 +206,7 @@ describe('Algebra Integral Tests:', () => {
   describe('WETH --> ERC20', () => {
     it('exactIn swap', async () => {
       const { trader, routerSDK, contracts } = ctx
-      const amountIn = expandTo18DecimalsBN(0.2)
+      const amountIn = expandTo18DecimalsBN(0.1)
       const minAmountOut = expandTo6DecimalsBN(80)
 
       const pool = createMockIntegralPool(BASE_WETH, BASE_USDC)

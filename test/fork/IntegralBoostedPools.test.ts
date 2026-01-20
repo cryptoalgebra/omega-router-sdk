@@ -13,7 +13,6 @@ import {
   getMinTick,
 } from '../shared/helpers'
 import { MAX_UINT, DEADLINE, SLIPPAGE } from '../shared/constants'
-import { disablePluginFactory } from '../shared/mainnetForkHelpers'
 import { executeRouterCalldata, DEX } from '../shared/executeRouter'
 import { setupTestEnvironment, TestContext } from '../shared/setupTestEnvironment'
 
@@ -25,10 +24,6 @@ describe('Algebra Integral Boosted Pools Tests:', () => {
   })
 
   describe('Boosted Pool Swaps', () => {
-    beforeEach('Disable plugin factory', async () => {
-      await disablePluginFactory()
-    })
-
     beforeEach('Create and fund [wmUSDC/waWETH] pool', async () => {
       const { deployer, contracts } = ctx
       const { usdc, weth, waWETH, wmUSDC, nfpm } = contracts
