@@ -7,10 +7,10 @@
   resolved "https://registry.yarnpkg.com/@adraffy/ens-normalize/-/ens-normalize-1.11.1.tgz#6c2d657d4b2dfb37f8ea811dcb3e60843d4ac24a"
   integrity sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==
 
-"@cryptoalgebra/integral-sdk@npm:@cryptoalgebra/clamm-boosted-pools-sdk@^0.2.0":
-  version "0.2.0"
-  resolved "https://registry.yarnpkg.com/@cryptoalgebra/clamm-boosted-pools-sdk/-/clamm-boosted-pools-sdk-0.2.0.tgz#be52b233fc8e4891bcdb79d6d9a1b278458e89dc"
-  integrity sha512-C4KuN0FPmLzsG07A8MSgmonjNHyS7Z1XWxvm1Qz5f1QkdmhuNwnILMTNGJOvAKVqTpBtMWI/IGud63cHm433Zg==
+"@cryptoalgebra/integral-sdk@npm:@cryptoalgebra/integral-sdk@1.1.1":
+  version "1.1.1"
+  resolved "https://registry.yarnpkg.com/@cryptoalgebra/integral-sdk/-/integral-sdk-1.1.1.tgz#e5b915130706eaa0b3eef7c0f68dd45076b4b63e"
+  integrity sha512-FrRDYYTQzCxBFdf5rbc6eKijF5/rVxj6U/hNa3N+2ae9RjZXlAsd2K0N65GBWWhI0DW1cLU64EnrF8Xm27HygQ==
   dependencies:
     "@ethersproject/abi" "^5.7.0"
     "@ethersproject/address" "^5.7.0"
