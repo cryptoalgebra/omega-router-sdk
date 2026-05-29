@@ -1,14 +1,14 @@
 import { BoostedToken, Token } from '@cryptoalgebra/integral-sdk'
 
 // Base Chain tokens
-export const BASE_WETH = new Token(8453, '0x4200000000000000000000000000000000000006', 18, 'WETH', 'Wrapped Ether')
-export const BASE_USDC = new Token(8453, '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', 6, 'USDC', 'USD//C')
-export const BASE_DAI = new Token(8453, '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb', 18, 'DAI', 'Dai Stablecoin')
+export const BASE_WETH = new Token(84532, '0x6113D55fCb7949B6d118563DAC32cB5D76009c18', 18, 'WETH', 'Wrapped Ether')
+export const BASE_USDC = new Token(84532, '0xdc8eB684CA4bCD58CAFEacdBBF5A9fA628F81DF3', 18, 'USDC', 'USD//C')
+export const BASE_DAI = new Token(84532, '0xdc8eB684CA4bCD58CAFEacdBBF5A9fA628F81DF3', 18, 'DAI', 'Dai Stablecoin')
 
 // Base Chain boosted tokens
 export const BASE_WM_USDC = new BoostedToken(
-  8453,
-  '0x616a4E1db48e22028f6bbf20444Cd3b8e3273738',
+  84532,
+  '0x6045450424c527bee1a2638d822d11bbca4f2a46',
   18,
   'smUSDC',
   'Wrapped Morpho USDC',
@@ -16,8 +16,8 @@ export const BASE_WM_USDC = new BoostedToken(
 )
 
 export const BASE_WA_WETH = new BoostedToken(
-  8453,
-  '0xe298b938631f750DD409fB18227C4a23dCdaab9b',
+  84532,
+  '0xF115d73823B3268AaaA58691a3778c08DeE77A91',
   18,
   'waWETH',
   'Wrapped Aave WETH',
@@ -25,9 +25,9 @@ export const BASE_WA_WETH = new BoostedToken(
 )
 
 export const BASE_WA_USDC = new BoostedToken(
-  8453,
-  '0xc768c589647798a6ee01a91fde98ef2ed046dbd6',
-  6,
+  84532,
+  '0x6045450424c527bee1a2638d822d11bbca4f2a46',
+  18,
   'waUSDC',
   'Wrapped Aave USDC',
   BASE_USDC

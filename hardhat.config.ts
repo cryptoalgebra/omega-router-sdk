@@ -26,7 +26,7 @@ const config: HardhatUserConfig = {
   networks: {
     hardhat: {
       allowUnlimitedContractSize: false,
-      chainId: 8453,
+      chainId: 84532,
       hardfork: 'cancun',
       forking: {
         url: `https://rpc.ankr.com/base/${process.env.ANKR_API_KEY}`,
@@ -36,7 +36,7 @@ const config: HardhatUserConfig = {
         mnemonic: 'your custom mnemonic phrase goes here your custom mnemonic phrase goes here',
       },
       chains: {
-        8453: {
+        84532: {
           hardforkHistory: {
             cancun: 0,
           },
