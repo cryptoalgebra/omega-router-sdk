@@ -7,10 +7,10 @@
   resolved "https://registry.yarnpkg.com/@adraffy/ens-normalize/-/ens-normalize-1.11.1.tgz#6c2d657d4b2dfb37f8ea811dcb3e60843d4ac24a"
   integrity sha512-nhCBV3quEgesuf7c7KYfperqSS14T8bYuvJ8PcLJp6znkZpFc0AuW4qBtr8eKVyPPe/8RSr7sglCWPU5eaxwKQ==
 
-"@cryptoalgebra/integral-sdk@npm:@cryptoalgebra/integral-sdk@1.1.2":
-  version "1.1.2"
-  resolved "https://registry.yarnpkg.com/@cryptoalgebra/integral-sdk/-/integral-sdk-1.1.2.tgz#9d036532829fc4c76df1c52971e2fd0e8c882b4c"
-  integrity sha512-f0yYtK2oeM/8VBSNkJEwdtYdbpMsJjQkmtbHbW7nqjaqpdEwk/NKkekXCliSqew+P9VvQ71+71pGt3YfKgBkMQ==
+"@cryptoalgebra/integral-sdk@^1.1.3":
+  version "1.1.3"
+  resolved "https://registry.yarnpkg.com/@cryptoalgebra/integral-sdk/-/integral-sdk-1.1.3.tgz#4c58e3818a4351152ccf91dd9fa4a98a8ee2cb5c"
+  integrity sha512-Xf6mnPPQIf4BWp5HhbV2KPnUbBQe4gHu9k6qNKv3h6TDJdZAyYdT6DRqBADareI0LAjq3ojbPQBQWM+8CMNqeA==
   dependencies:
     "@ethersproject/abi" "^5.7.0"
     "@ethersproject/address" "^5.7.0"
